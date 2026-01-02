@@ -1,0 +1,33 @@
+displayOpenComplaintDialog() {
+  this.isDialogOpened = true;
+
+  // ✅ snapshot main form state
+  const prevIsFormValid = this.isFormValid;
+  const prevCurrentFormValues = this.currentFormValues;
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialogForSubmit, {
+    width: '45%'
+  });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    // ✅ restore main form state (dialog overwrote it)
+    this.isFormValid = prevIsFormValid;
+    this.currentFormValues = prevCurrentFormValues;
+
+    this.isDialogOpened = false;
+
+    // optional: ensure button updates immediately
+    // this.cdr.detectChanges();
+  });
+}
+
+
+setFormValidity(event: any) {
+  if (this.isDialogOpened) return;   // ✅ ignore dialog emissions
+  this.isFormValid = event;
+}
+
+getFormValues(event: any) {
+  if (this.isDialogOpened) return;   // ✅ ignore dialog emissions
+  this.currentFormValues = event;
+}
