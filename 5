@@ -1,0 +1,26 @@
+displayOpenComplaintDialog() {
+  this.isDialogOpened = true;
+  this.complaintDialogSubmitted = false;
+
+  // backup main form state before dialog eForm overwrites it
+  this.formValidBackup = this.isFormValid;
+  this.formValuesBackup = this.currentFormValues;
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialog, { width: '45%' });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    this.complaintDialogSubmitted = !!result;
+
+    // restore main form state only if user cancelled/closed dialog
+    if (!result) {
+      if (this.formValidBackup !== null) this.isFormValid = this.formValidBackup;
+      if (this.formValuesBackup !== null) this.currentFormValues = this.formValuesBackup;
+    }
+
+    this.isDialogOpened = false;
+
+    // cleanup
+    this.formValidBackup = null;
+    this.formValuesBackup = null;
+  });
+}
