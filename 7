@@ -1,0 +1,144 @@
+Great — this screenshot is the last missing piece.
+Your isSubmitDisabled() logic is basically correct, but it still references shared state that caused all the problems.
+
+I’ll show you exactly what to change and what NOT to touch, so you don’t regress anything.
+
+⸻
+
+🔴 The real problem in isSubmitDisabled()
+
+You currently use:
+
+this.isFormValid
+this.currentFormValues
+this.complaintDialogSubmitted
+
+But now you have two different forms:
+
+Context	Should use
+Main screen (Complete / Pend / Return etc.)	isFormValid, currentFormValues
+Cancel → Complaint dialog	isComplaintFormValid, complaintFormValues
+
+The good news:
+Your Cancel logic already correctly uses complaintDialogSubmitted.
+We only need to make one small but critical clarification.
+
+⸻
+
+✅ EXACT FIX for isSubmitDisabled()
+
+🔧 Change ONLY this block (Cancel case)
+
+❌ Current code
+
+if (saveRequestObject.action === SwftStageActions.CANCEL_REQUEST && this.requestDetails?.complaintCaptured) {
+  const reason = workflowForm?.stageActionReasonField;
+
+  // Enable only if complaintDialogSubmitted is true
+  status = !!reason && this.complaintDialogSubmitted;
+}
+
+✅ Keep it EXACTLY the same
+
+This part is already correct 👍
+DO NOT add isFormValid here — Cancel does NOT depend on main form validity.
+
+⸻
+
+✅ REQUIRED CHANGE for Complete action (THIS IS THE FIX)
+
+❌ Current code
+
+else if (saveRequestObject.action && saveRequestObject.action === SwftWorkflowActions.CompleteAction) {
+  if (this.approvalCompleted && this.isFormValid && saveRequestObject.statusName) {
+    status = true;
+    if (!this.validateDynamicFormRequiredFields()) {
+      status = false;
+    }
+  }
+}
+
+✅ Replace with this
+
+else if (saveRequestObject.action === SwftWorkflowActions.CompleteAction) {
+  if (
+    this.approvalCompleted &&
+    this.isFormValid &&                 // ✅ MAIN form validity only
+    saveRequestObject.statusName
+  ) {
+    status = this.validateDynamicFormRequiredFields();
+  }
+}
+
+📌 This does two important things:
+	1.	Guarantees Complete NEVER depends on dialog validity
+	2.	Prevents dialog eForm from enabling Complete accidentally
+
+⸻
+
+✅ ONE MORE REQUIRED FIX (small but important)
+
+When action switches away from Cancel, you MUST reset complaint state
+(otherwise old Cancel dialog submissions leak into Complete).
+
+Add this where action changes
+
+Wherever you set:
+
+saveRequestObject.action = ...
+
+Add:
+
+if (saveRequestObject.action !== SwftStageActions.CANCEL_REQUEST) {
+  this.complaintDialogSubmitted = false;
+  this.isComplaintFormValid = false;
+  this.complaintFormValues = null;
+}
+
+This is critical.
+
+⸻
+
+✅ Final sanity check (use this to test)
+
+Scenario 1 — Cancel flow
+	1.	Select Cancel
+	2.	Open complaint dialog
+	3.	Fill mandatory fields
+	4.	Submit dialog
+✅ Submit enables
+✅ Cancel submit enabled
+
+⸻
+
+Scenario 2 — Cancel → Complete (your original bug)
+	1.	Select Cancel
+	2.	Submit complaint dialog
+	3.	Switch action to Complete
+	4.	Main form has missing required fields
+✅ Submit DISABLED (FIXED)
+
+⸻
+
+Scenario 3 — Complete normally
+	1.	Never open complaint dialog
+	2.	Fill main form required fields
+	3.	Select Complete
+✅ Submit ENABLED
+
+⸻
+
+🧠 Summary (what you actually changed)
+	•	❌ Dialog no longer touches isFormValid / currentFormValues
+	•	✅ Cancel depends only on complaintDialogSubmitted
+	•	✅ Complete depends only on main form
+	•	✅ No refactor of service / save logic
+	•	✅ No regressions to other actions
+
+⸻
+
+If you want, next I can:
+	•	Refactor isSubmitDisabled() to be readable (without changing behavior), or
+	•	Give you a 1-page summary you can paste into your PR description explaining the fix clearly for reviewers.
+
+Just tell me 👍
