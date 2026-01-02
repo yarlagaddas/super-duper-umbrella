@@ -1,0 +1,122 @@
+I’m **not** removing `complaintDialogSubmitted`. Keep it.
+That variable solves your *other* bug (dialog submitted → switching to Complete incorrectly enables even when main form is empty).
+
+What I’m saying is: you have **two separate problems** and they need **two separate protections**:
+
+1. **Cancel dialog should not corrupt main form state** (your current issue: Cancel → close → Complete stays disabled even though main form is filled)
+2. **Dialog submit should not make Complete enable when main form is empty** (your earlier issue Copilot fixed with `complaintDialogSubmitted`)
+
+So the correct fix is: **keep `complaintDialogSubmitted` AND prevent the dialog eForm from overwriting main form variables**.
+
+---
+
+## ✅ Minimal combined fix (safe, no refactor)
+
+### A) Keep `complaintDialogSubmitted` logic as-is (for “dialog submitted” case)
+
+* On dialog open: `complaintDialogSubmitted = false`
+* On dialog submit: `complaintDialogSubmitted = true`
+* In Cancel branch, require it.
+
+### B) Add a “don’t let dialog overwrite main form state” protection
+
+Because your dialog uses the same handlers (`setFormValidity`, `getFormValues`) as the main form.
+
+You can do this with **either** (or both) of these tiny changes:
+
+---
+
+### Option 1 (best minimal): Snapshot + restore after dialog close
+
+```ts
+displayOpenComplaintDialog() {
+  this.isDialogOpened = true;
+  this.complaintDialogSubmitted = false;
+
+  // snapshot main form state before dialog starts emitting
+  const prevIsFormValid = this.isFormValid;
+  const prevCurrentFormValues = this.currentFormValues;
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialogForSubmit, { width: '45%' });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    // restore main form state (dialog overwrote these)
+    this.isFormValid = prevIsFormValid;
+    this.currentFormValues = prevCurrentFormValues;
+
+    // if you already set complaintDialogSubmitted via result, keep it
+    // (don’t force it false here)
+    this.isDialogOpened = false;
+  });
+}
+```
+
+✅ This fixes: **Cancel → close → Complete stays disabled** (because you restore the main form state).
+
+---
+
+### Option 2 (extra safety): Ignore dialog emissions while dialog is open
+
+```ts
+setFormValidity(event: boolean) {
+  if (this.isDialogOpened) return;   // ignore dialog viewer emissions
+  this.isFormValid = event;
+}
+
+getFormValues(event: any) {
+  if (this.isDialogOpened) return;   // ignore dialog viewer emissions
+  this.currentFormValues = event;
+}
+```
+
+✅ This prevents the dialog from corrupting main state in the first place.
+
+You can do **only Option 1**, but if the dialog emits frequently while open, adding Option 2 makes it bulletproof.
+
+---
+
+## ✅ How your “dialog submitted but main form empty” case still works
+
+Because `complaintDialogSubmitted` stays in your `isSubmitDisabled()` logic.
+
+Your existing Complete logic should still require the **main form** to be valid/required fields filled:
+
+```ts
+else if (saveRequestObject.action === SwftWorkFlowActions.CompleteAction) {
+  if (this.approvalCompleted && this.isFormValid && saveRequestObject.statusName) {
+    status = true;
+    if (!this.validateDynamicFormRequiredFields()) {
+      status = false;
+    }
+  }
+}
+```
+
+So if your previous bug was: *dialog submit causes `isFormValid` / `currentFormValues` to become “valid” even though main form is empty*, that happens **only because the dialog overwrote them**.
+
+With Option 1/2 above, the dialog **can’t overwrite** main form validity/values anymore — so Complete will NOT enable unless main form is actually filled.
+
+Meaning: after adding this protection, you might find you need **less reliance** on `complaintDialogSubmitted` for the Complete path — but you can keep it for Cancel path exactly as Copilot did.
+
+---
+
+## One important note (tiny check)
+
+In your screenshot, the dialog viewer uses:
+
+`(getFormValuesWithNoSubmit)="getFormValues($event)"`
+
+So even cancelling the dialog can push values. That’s exactly why this bug exists.
+
+---
+
+## If you want me to give the exact patch location
+
+Tell me where these are defined in TS:
+
+* `setFormValidity()`
+* `getFormValues()`
+* `displayOpenComplaintDialog()` (or `displayOpenComplaintDialog()` name in your file)
+* Where you set `isDialogOpened` / `complaintDialogSubmitted`
+
+But you don’t need to refactor. **Add snapshot/restore + (optional) guard, and keep complaintDialogSubmitted.**
