@@ -1,0 +1,206 @@
+Yep. Here’s the full set of fixes (end-to-end) to resolve both problems:
+	1.	Cancel → Complete makes main submit enabled even though required fields are empty
+	2.	Complaint dialog Submit button not enabling / using wrong validity
+	3.	Ensure dialog submit saves the dialog eForm values (not main form values)
+
+⸻
+
+✅ Fix Set A — Separate “main form” state vs “complaint dialog” state (MOST IMPORTANT)
+
+1) Add these variables in your component
+
+// MAIN form (existing)
+isFormValid = false;
+currentFormValues: any;
+
+// COMPLAINT dialog (new isolated state)
+isComplaintFormValid = false;
+complaintFormValues: any;
+
+// Dialog result flag
+complaintDialogSubmitted = false;
+
+// Optional: dialog open tracking
+isDialogOpened = false;
+complaintDialogRef: any = null;
+
+
+⸻
+
+2) Keep your existing main handlers as-is
+
+setFormValidity(event: any) {
+  this.isFormValid = event;
+}
+
+getFormValues(event: any) {
+  this.currentFormValues = event;
+}
+
+
+⸻
+
+3) Add separate handlers for complaint dialog eForm
+
+setComplaintFormValidity(event: any) {
+  this.isComplaintFormValid = event;
+}
+
+getComplaintFormValues(event: any) {
+  this.complaintFormValues = event;
+}
+
+
+⸻
+
+✅ Fix Set B — Fix the dialog submit/save flow so it does NOT corrupt main form
+
+4) Use a wrapper save method (minimal risk, no refactor of saveCurrentStage)
+
+This is the cleanest fix because your recursiveDataUpdate() uses this.currentFormValues.
+
+saveComplaintStage(exit: boolean, dialogRef?: any) {
+  // backup main values
+  const mainValuesBackup = this.currentFormValues;
+  const mainValidBackup = this.isFormValid;
+
+  // switch to complaint values ONLY for this save
+  this.currentFormValues = this.complaintFormValues;
+  this.isFormValid = this.isComplaintFormValid;
+
+  try {
+    // keep your existing saveCurrentStage call exactly same signature
+    this.saveCurrentStage(exit, dialogRef, undefined, true);
+  } finally {
+    // restore main form state immediately
+    this.currentFormValues = mainValuesBackup;
+    this.isFormValid = mainValidBackup;
+  }
+}
+
+✅ This alone prevents “Cancel → Complete” bug because dialog no longer overwrites main form state permanently.
+
+⸻
+
+✅ Fix Set C — Fix displayOpenComplaintDialog logic (result flag + restore behavior)
+
+5) Update displayOpenComplaintDialog() correctly
+
+Your earlier code was restoring always / flipping !!result incorrectly. Use this:
+
+displayOpenComplaintDialog() {
+  this.isDialogOpened = true;
+  this.complaintDialogSubmitted = false;
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialogForSubmit, {
+    width: '45%'
+  });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    // true only when submit actually happened
+    this.complaintDialogSubmitted = (result === true);
+
+    this.isDialogOpened = false;
+
+    // Optional: if user cancelled, you may want to reset complaint state
+    if (!this.complaintDialogSubmitted) {
+      this.isComplaintFormValid = false;
+      this.complaintFormValues = null;
+    }
+
+    // Keep focus logic if you want it (this is fine to keep)
+    setTimeout(() => {
+      this.closeIcon?._elementRef?.nativeElement?.focus();
+    }, 0);
+  });
+}
+
+
+⸻
+
+✅ Fix Set D — Fix the dialog HTML bindings (Submit enable + events)
+
+6) In the dialog template use complaint handlers (NOT main ones)
+
+Change your dialog eForm viewer bindings to:
+
+<swft-dynamic-eform-document-viewer
+  [readOnly]="false"
+  (formValidity)="setComplaintFormValidity($event)"
+  (getFormValuesWithNoSubmit)="getComplaintFormValues($event)"
+  [flowData]="flowData"
+  [jsonData]="stage.customEachStageData ?? jsonData"
+  [callProcessForm]="true"
+  [showCancel]="false"
+  [showSubmit]="false"
+  [intakeContext]="intakeContext">
+</swft-dynamic-eform-document-viewer>
+
+✅ This prevents dialog from overwriting isFormValid / currentFormValues.
+
+⸻
+
+7) Fix the dialog Submit button disable condition + click handler
+
+Right now your dialog submit uses [disabled]="!isFormValid" — that’s wrong because it refers to main form validity.
+
+Use:
+
+<button mat-raised-button
+        color="primary"
+        class="dialog-button-rounded"
+        [mat-dialog-close]="true"
+        (click)="saveComplaintStage(false, complaintDialogRef)"
+        [disabled]="!isComplaintFormValid">
+  Submit
+</button>
+
+✅ Now dialog submit enables based on dialog required fields, and saves dialog values.
+
+⸻
+
+✅ Fix Set E — Fix main submit enable logic (Cancel action must not leak into Complete)
+
+8) Reset complaint gating when action changes away from Cancel
+
+Wherever you handle action change / stageActionReason change, add:
+
+onActionChange(action: string) {
+  if (action !== SwftStageActions.CANCEL_REQUEST) {
+    this.complaintDialogSubmitted = false;
+    this.isComplaintFormValid = false;
+    this.complaintFormValues = null;
+  }
+}
+
+If you don’t have a handler, put it where you set saveRequestObject.action.
+
+✅ This stops stale “complaint submitted” state from enabling Complete accidentally later.
+
+⸻
+
+✅ Fix Set F — Correct any !!result logic (common bug)
+
+Anywhere you have:
+
+this.complaintDialogSubmitted = !!result;
+
+Replace with:
+
+this.complaintDialogSubmitted = (result === true);
+
+Because Cancel/close can return objects / truthy values depending on dialog close, and that will break your gating.
+
+⸻
+
+✅ Final Checklist (quick)
+	•	Dialog uses setComplaintFormValidity + getComplaintFormValues
+	•	Dialog submit button uses [disabled]="!isComplaintFormValid"
+	•	Dialog submit calls saveComplaintStage() wrapper (not saveCurrentStage directly)
+	•	displayOpenComplaintDialog sets complaintDialogSubmitted = (result === true)
+	•	When switching away from Cancel, reset complaint flags
+	•	Keep setTimeout focus — optional, safe
+
+⸻
+
+If you want, paste your isSubmitDisabled() block (the one with Cancel/Complete checks). I’ll rewrite it cleanly using these flags without changing the behavior.
