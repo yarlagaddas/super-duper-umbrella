@@ -1,0 +1,194 @@
+Yep — I can see the real root-cause now from your screenshots:
+
+✅ Why everything broke after adding the Cancel “Complaint Closure” dialog
+
+Inside the dialog template you are using:
+
+(swft-dynamic-eform-document-viewer
+  (formValidity)="setFormValidity($event)"
+  (getFormValuesWithNoSubmit)="getFormValues($event)"
+)
+
+Those two emitters overwrite the SAME variables (isFormValid, currentFormValues) that your main screen uses for enabling the main Submit.
+
+So when you open the cancel dialog:
+	•	the dialog eForm emits formValidity=true → sets isFormValid=true
+	•	now you switch to Complete → your main submit sees isFormValid=true even though main required fields are empty
+	•	OR the opposite problem: dialog submit button doesn’t enable because isFormValid is getting overwritten again by main form / other event flows
+
+So: one boolean is being shared by two different forms.
+
+⸻
+
+Fix #1 (Best + least risky): Separate state for dialog vs main form
+
+1) Add new variables (DO NOT touch existing main ones)
+
+Keep your existing:
+	•	isFormValid
+	•	currentFormValues
+
+Add dialog-only ones:
+
+// dialog-specific (do NOT reuse main form variables)
+isComplaintFormValid = false;
+complaintFormValues: any;
+
+// dialog result flag (you already have this)
+complaintDialogSubmitted = false;
+complaintDialogRef: any = null;
+
+2) Add dialog-only handlers
+
+Don’t reuse setFormValidity() and getFormValues() for the dialog.
+
+setComplaintFormValidity(event: any) {
+  this.isComplaintFormValid = event;
+}
+
+getComplaintFormValues(event: any) {
+  this.complaintFormValues = event;
+}
+
+3) Update dialog template bindings (THIS IS THE KEY)
+
+In #openComplaintDialogForSubmit template change to:
+
+<swft-dynamic-eform-document-viewer
+  [readOnly]="false"
+  (formValidity)="setComplaintFormValidity($event)"
+  (getFormValuesWithNoSubmit)="getComplaintFormValues($event)"
+  ...
+></swft-dynamic-eform-document-viewer>
+
+And change submit disabled binding to use dialog validity:
+
+<button
+  mat-raised-button
+  color="primary"
+  [mat-dialog-close]="true"
+  (click)="saveCurrentStage(false, complaintDialogRef, undefined, true)"
+  [disabled]="!isComplaintFormValid"
+>
+  Submit
+</button>
+
+Cancel button should close as false:
+
+<button mat-stroked-button color="primary" [mat-dialog-close]="false">
+  Cancel
+</button>
+
+✅ Now dialog submit enable/disable depends ONLY on dialog form validity.
+✅ Main submit enable/disable depends ONLY on main form validity.
+
+⸻
+
+Fix #2: Fix displayOpenComplaintDialog() logic (your current one is okay but needs 2 tweaks)
+
+Your current version is close, but do this:
+
+displayOpenComplaintDialog() {
+  this.complaintDialogSubmitted = false;
+  this.isComplaintFormValid = false;
+  this.complaintFormValues = null;
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialogForSubmit, {
+    width: '45%'
+  });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    // result will be true only if Submit button closed it
+    this.complaintDialogSubmitted = (result === true);
+
+    // optional: clear dialog validity if user cancelled
+    if (result !== true) {
+      this.isComplaintFormValid = false;
+      this.complaintFormValues = null;
+    }
+  });
+
+  // keep your focus timeout if you want (not related to bug)
+  setTimeout(() => this.closeIcon?._elementRef?.nativeElement.focus(), 0);
+}
+
+About your question: “You removed timeout… not needed?”
+
+The setTimeout(...focus...) is not part of the bug.
+It’s only for UX/focus handling. Keep it if your app relies on it for accessibility / focus restore.
+
+⸻
+
+Fix #3: Reset complaintDialogSubmitted when user switches away from CANCEL
+
+Otherwise, user can:
+	1.	pick Cancel → submit dialog once (flag becomes true)
+	2.	switch to Complete → cancel flag still true (can affect logic)
+
+Wherever you handle action change (dropdown selection), do:
+
+onActionChange(action: string) {
+  if (action !== SwftStageActions.CANCEL_REQUEST) {
+    this.complaintDialogSubmitted = false;
+    this.isComplaintFormValid = false;
+    this.complaintFormValues = null;
+  }
+}
+
+If you don’t have an action-change handler, add it where your dropdown emits action changes.
+
+⚠️ Don’t put this reset inside isSubmitDisabled() (because that becomes a side-effecting getter and will create new bugs).
+
+⸻
+
+Fix #4: Update isSubmitDisabled() to only use dialog flags for Cancel
+
+Your current logic is mostly fine, but make sure it doesn’t rely on isFormValid from dialog anymore.
+
+Cancel path should be ONLY:
+
+if (saveRequestObject.action === SwftStageActions.CANCEL_REQUEST && this.requestDetails?.complaintCaptured) {
+  const reason = workflowForm?.stageActionReasonField;
+  status = !!reason && this.complaintDialogSubmitted;
+}
+
+Complete path stays the same (based on main isFormValid + required fields):
+
+else if (saveRequestObject.action && saveRequestObject.action === SwftWorkflowActions.CompleteAction) {
+  if (this.approvalCompleted && this.isFormValid && saveRequestObject.statusName) {
+    status = true;
+    if (!this.validateDynamicFormRequiredFields()) {
+      status = false;
+    }
+  }
+}
+
+✅ Now Cancel gating is isolated
+✅ Now Complete gating is isolated
+
+⸻
+
+What you should REMOVE (to avoid new issues)
+
+Since we’re isolating dialog state properly, you don’t need these “backup/restore main form state” variables anymore:
+	•	formValidBackup
+	•	formValuesBackup
+…and their restore logic.
+
+Those were a workaround for shared state. Once state is separated, backups just add risk.
+
+⸻
+
+Quick checklist (so you don’t miss anything)
+	1.	✅ Add: isComplaintFormValid, complaintFormValues
+	2.	✅ Add: setComplaintFormValidity(), getComplaintFormValues()
+	3.	✅ In dialog template: use dialog handlers + [disabled]="!isComplaintFormValid"
+	4.	✅ Ensure dialog submit uses [mat-dialog-close]="true" and cancel uses false
+	5.	✅ Reset complaint flags when switching action away from cancel
+	6.	✅ Remove backup/restore logic (optional but strongly recommended)
+
+⸻
+
+If you apply the above exactly, it will fix both:
+	•	Bug A: switching Cancel → Complete enables main submit incorrectly
+	•	Bug B: dialog submit button not enabling even after mandatory fields are filled
