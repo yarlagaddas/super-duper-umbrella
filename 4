@@ -1,0 +1,76 @@
+Got it — that new symptom is exactly what I’d expect if you added the guard:
+
+if (this.isDialogOpened) return;
+
+Because now when the complaint dialog eForm emits validity, you’re ignoring it, so isFormValid never becomes true → the dialog Submit stays disabled even after you fill mandatory fields.
+
+✅ The simplest fix (minimal + safe)
+
+Do NOT block the dialog’s validity emissions.
+Instead, allow the dialog to update isFormValid/currentFormValues, but restore the main form state after the dialog closes (so Cancel→Complete won’t break).
+
+So:
+
+1) Remove the guard from these two methods
+
+Change back to:
+
+setFormValidity(event: any) {
+  this.isFormValid = event;
+}
+
+getFormValues(event: any) {
+  this.currentFormValues = event;
+}
+
+✅ This will immediately fix: dialog submit not enabling.
+
+2) Keep the snapshot + restore logic in displayOpenComplaintDialog()
+
+This is the real “safe” fix for the Cancel→Complete regression.
+
+private mainFormValidBackup: boolean | null = null;
+private mainFormValuesBackup: any[] | null = null;
+
+displayOpenComplaintDialog() {
+  this.isDialogOpened = true;
+  this.complaintDialogSubmitted = false;
+
+  // backup MAIN state
+  this.mainFormValidBackup = this.isFormValid;
+  this.mainFormValuesBackup = this.currentFormValues;
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialogForSubmit, { width: '45%' });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    this.complaintDialogSubmitted = !!result;
+
+    // restore MAIN state
+    if (this.mainFormValidBackup !== null) this.isFormValid = this.mainFormValidBackup;
+    if (this.mainFormValuesBackup !== null) this.currentFormValues = this.mainFormValuesBackup;
+
+    this.isDialogOpened = false;
+    this.mainFormValidBackup = null;
+    this.mainFormValuesBackup = null;
+  });
+}
+
+✅ This keeps Copilot’s complaintDialogSubmitted behavior intact, and fixes Cancel→Complete.
+
+⸻
+
+Why this combination works
+	•	Dialog submit enable requires dialog’s (formValidity) to update isFormValid → so you must not ignore it.
+	•	Cancel→Complete bug happens because dialog overwrites main state → we fix that by restoring main state after dialog closes.
+
+⸻
+
+If you want an even cleaner version (optional, but still small)
+
+If you prefer not to let dialog touch main vars at all, then you’d add separate complaintIsFormValid/complaintFormValues and update dialog HTML bindings. But that’s more changes.
+
+For your “don’t refactor” requirement: remove the guard + keep restore is the smallest correct fix.
+
+⸻
+
+If you paste the dialog Submit button HTML line ([disabled] condition), I can confirm exactly which variable it depends on — but based on what you showed, this is the right fix.
