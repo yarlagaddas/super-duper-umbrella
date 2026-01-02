@@ -1,0 +1,15 @@
+setSelectedStageAction(event: any) {
+
+  // FIX: when user switches away from Cancel, wipe complaint dialog state
+  if (event?.actionName !== WorkFlowActions.CANCEL_REQUEST) {
+    this.complaintDialogSubmitted = false;
+
+    // optional: if you created isolated complaint state, reset it too
+    this.isComplaintFormValid = false;
+    this.complaintFormValues = null;
+  }
+
+  this.utilities = SwftStageUtilitiesService.getDynamicMenuItemsForStage(this.stage);
+
+  // ... keep your existing code as-is
+}
