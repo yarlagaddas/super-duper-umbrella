@@ -1,0 +1,114 @@
+Perfect — this confirms it 100%.
+
+### What your screenshots show (smoking gun)
+
+* Main eForm and Complaint-dialog eForm both emit into the **same** state:
+
+  * `setFormValidity($event) -> this.isFormValid`
+  * `getFormValues($event) -> this.currentFormValues`
+* When the complaint dialog opens, its eForm viewer fires those outputs and overwrites `isFormValid/currentFormValues`.
+* When you close/cancel the dialog, those values stay (often invalid/empty), so when you switch to **Complete**, your `isSubmitDisabled()` checks:
+
+  * `this.isFormValid` ✅ (but now it’s dialog’s validity)
+  * `validateDynamicFormRequiredFields()` ✅ (but it reads dialog’s values from `currentFormValues`)
+    → therefore **Complete stays disabled** even though main form is filled.
+
+So we fix it with **minimal change**: **backup main values before opening dialog and restore after dialog closes** + **ignore dialog emissions while open**.
+
+---
+
+## ✅ Minimal fix (no refactor, keeps `complaintDialogSubmitted`)
+
+### 1) Add backups to the component
+
+Add near your properties:
+
+```ts
+private mainFormValidBackup: boolean | null = null;
+private mainFormValuesBackup: any[] | null = null;
+```
+
+### 2) Update your existing `displayOpenComplaintDialog()` (the one in screenshot)
+
+Just add snapshot + restore — keep your current `complaintDialogSubmitted` logic exactly as-is:
+
+```ts
+displayOpenComplaintDialog() {
+  this.isDialogOpened = true;
+  this.complaintDialogSubmitted = false;
+
+  // ✅ BACKUP main form state before dialog eForm overwrites it
+  this.mainFormValidBackup = this.isFormValid;
+  this.mainFormValuesBackup = this.currentFormValues;
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialogForSubmit, {
+    width: '45%'
+  });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    // ✅ keep Copilot logic
+    this.complaintDialogSubmitted = !!result;
+
+    // ✅ RESTORE main form state (Cancel/Close should not corrupt it)
+    if (this.mainFormValidBackup !== null) {
+      this.isFormValid = this.mainFormValidBackup;
+    }
+    if (this.mainFormValuesBackup !== null) {
+      this.currentFormValues = this.mainFormValuesBackup;
+    }
+
+    this.isDialogOpened = false;
+
+    // optional cleanup
+    this.mainFormValidBackup = null;
+    this.mainFormValuesBackup = null;
+  });
+}
+```
+
+### 3) Add a tiny guard in your existing callbacks
+
+This stops dialog eForm from overwriting main state while the dialog is open.
+
+```ts
+setFormValidity(event: any) {
+  if (this.isDialogOpened) return;   // ✅ ignore complaint dialog eForm emissions
+  this.isFormValid = event;
+}
+
+getFormValues(event: any) {
+  if (this.isDialogOpened) return;   // ✅ ignore complaint dialog eForm emissions
+  this.currentFormValues = event;
+}
+```
+
+---
+
+## Why this keeps BOTH behaviors correct
+
+### ✅ Your current bug (Cancel → close → Complete stays disabled even though main filled)
+
+Fixed because after dialog close you restore the real main `isFormValid/currentFormValues`.
+
+### ✅ Copilot’s earlier bug (Dialog submitted → switch to Complete enables even when main empty)
+
+Still protected because:
+
+* dialog no longer overwrites `isFormValid/currentFormValues`
+* and `complaintDialogSubmitted` logic remains intact for Cancel flow
+
+---
+
+## One extra line I recommend (optional, but safe)
+
+Your `isFormValid` is initialized as `true` (I saw it in your properties). That can cause false positives. If you can safely change it:
+
+```ts
+isFormValid = false;
+```
+
+Not required for your Cancel→Complete bug, but it prevents “default true” surprises.
+
+---
+
+If you apply the 3 changes above, your scenario will work exactly as expected with **minimal code change** and **no refactor**.
