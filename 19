@@ -1,0 +1,95 @@
+This pattern usually means your first “Cancel dialog submit” is saving to the backend, but your page-load source of truth (what you use to prefill the dialog after a refresh) is NOT getting updated on that first save.
+
+So you’re seeing two different behaviors:
+
+What you’re seeing (mapped to cause)
+
+✅ Without refresh (same session)
+
+You reopen Cancel dialog and it shows the previously saved values
+➡️ Because you still have the values in in-memory state (something like complaintFormValues, currentFormValues, or the reactive form object). You’re not actually reloading from backend; you’re just reusing what’s in RAM.
+
+❌ After refresh (new session)
+
+Dialog shows empty
+➡️ Because on page load you are populating the dialog from requestDetails/jsonData coming from API, and that API response still doesn’t contain the complaint values after the first save (or your UI is not mapping them back into the form model on load).
+
+✅ After doing submit twice + refresh
+
+Now it shows after refresh
+➡️ Something in your “second submit” flow is triggering a stage refresh / data reload / different payload shape that finally causes the backend to persist it in the place your page-load uses, or causes your UI to rebuild jsonData/currentFormValues correctly.
+
+⸻
+
+The most common actual root cause (in Angular apps like yours)
+
+Root cause A (most common)
+
+After the first dialog save, you don’t refresh requestDetails/jsonData from backend, so the app keeps showing values from memory.
+When you refresh the browser, the app loads from backend again, but backend still returns old data or you never map it into the form.
+
+Why it appears only after “second time”?
+Because the second dialog submit or action/reason change triggers:
+	•	getRequestDetails() / “load stage” API
+	•	or recursiveDataUpdate(...)
+	•	or some “stage save/submit” handler that rebuilds jsonData correctly
+
+⸻
+
+What to do (fix that won’t break other flows)
+
+✅ Fix 1 (best + safest): After successful dialog save, immediately reload the request/stage details
+
+Inside the Cancel dialog submit success path (where you currently set complaintDialogSubmitted = true and close dialog), also trigger a refresh call:
+
+if (isSuccess && isComplaintFlow) {
+  dialogRef?.close(true);
+
+  // IMPORTANT: refresh source-of-truth that is used on page load
+  this.reloadRequestDetails(); // whatever method you already have
+  return;
+}
+
+Where reloadRequestDetails() should call the same API you call on initial load (ex: getRequestDetails(...), getStageDetails(...)) and then rebuild jsonData/currentFormValues.
+
+This ensures: backend data + UI model are aligned immediately, so after refresh it shows.
+
+⸻
+
+✅ Fix 2: Ensure dialog prefill is driven from backend model (not only from local vars)
+
+When opening dialog, don’t rely only on complaintFormValues (memory). Prefer:
+	1.	requestDetails / stage.customEachStageData / response DTO
+	2.	fallback to complaintFormValues (memory)
+
+So your “refresh” case works reliably.
+
+⸻
+
+✅ Fix 3: Confirm you’re saving to the same place that you read from on page load
+
+This is a sneaky one:
+	•	On submit you might be sending complaint values inside currentFormValues
+	•	But on page load you might be reading from requestDetails.complaintCaptured or a different object
+	•	Or you only extract complaint IDs (getClosureComplaintBlockIds) and not the actual values on init
+
+If the “read path” and “write path” don’t match, you’ll get exactly what you described.
+
+⸻
+
+Quick way to prove which one it is (no guessing)
+
+After the first submit, immediately call the same API you use on init (in DevTools / network tab) and check:
+	•	Does the response contain the complaint values?
+	•	No → backend isn’t persisting them on first submit (payload missing some flag/field the backend expects)
+	•	Yes → backend is fine, your UI is not mapping the response into the dialog model on init
+
+Either way, Fix 1 (reload + remap after save) still solves the user-visible issue and is the least risky.
+
+⸻
+
+If you paste 2 things, I’ll tell you the exact line to change
+	1.	Your “page load” method (where you call API and set requestDetails/jsonData)
+	2.	Your dialog open method (where you prefill the form)
+
+With those two, I can point to the exact missing mapping/reload that makes “first submit not visible after refresh”.
