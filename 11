@@ -1,0 +1,210 @@
+Got it. The new behavior (values not saved / payload shows {} or old values / reopen shows empty) is happening because of timing + shared state:
+
+✅ Root cause
+
+Your Submit button in the complaint dialog does BOTH:
+	•	(click)="saveCurrentStage(...)"  ✅ starts async save-form call
+	•	mat-dialog-close="true" ✅ immediately closes the dialog
+
+So the dialog closes before the save-form response comes back, and your afterClosed() runs and restores currentFormValues / isFormValid back to the main form.
+
+Then when the API response returns, recursiveDataUpdate(...) runs using the restored main-form currentFormValues, not the complaint values → so:
+	•	payload becomes {} / null complaintClosureBlockData
+	•	previously saved values don’t update (still sends old)
+	•	reopening dialog shows empty (because stage JSON never got updated)
+
+⸻
+
+All fixes (minimal + stable)
+
+Fix 1: Don’t auto-close dialog on Submit
+
+Remove mat-dialog-close="true" from complaint dialog submit button and close it only after save-form succeeds.
+
+✅ HTML change (complaint dialog template)
+
+Change this:
+
+<button mat-raised-button
+  [mat-dialog-close]="true"
+  (click)="saveCurrentStage(false, complaintDialogRef, undefined, true)"
+  [disabled]="!isFormValid">
+  Submit
+</button>
+
+To this:
+
+<button mat-raised-button
+  (click)="submitComplaintDialog()"
+  [disabled]="!isComplaintFormValid">
+  Submit
+</button>
+
+(We’ll add submitComplaintDialog() below.)
+
+⸻
+
+Fix 2: Don’t reuse main form validity/values for complaint dialog
+
+Right now your complaint eForm is emitting into:
+	•	setFormValidity($event) → isFormValid
+	•	getFormValues($event) → currentFormValues
+
+That was already risky (it overwrites main form state). Now it’s also breaking save timing.
+
+✅ Add separate variables
+
+// MAIN form
+isFormValid = false;
+currentFormValues: any;
+
+// COMPLAINT dialog
+isComplaintFormValid = false;
+complaintFormValues: any;
+
+// backup MAIN state while dialog is open
+private mainFormValidBackup: boolean | null = null;
+private mainFormValuesBackup: any = null;
+
+complaintDialogRef: any = null;
+
+✅ Add separate handlers
+
+setComplaintFormValidity(event: any) {
+  this.isComplaintFormValid = event;
+}
+
+getComplaintFormValues(event: any) {
+  this.complaintFormValues = event;
+}
+
+✅ Update complaint dialog viewer bindings
+
+Inside #openComplaintDialogForSubmit change:
+
+(formValidity)="setFormValidity($event)"
+(getFormValuesWithNoSubmit)="getFormValues($event)"
+
+To:
+
+(formValidity)="setComplaintFormValidity($event)"
+(getFormValuesWithNoSubmit)="getComplaintFormValues($event)"
+
+
+⸻
+
+Fix 3: Keep complaint values active until save finishes, then restore main form
+
+✅ When opening dialog
+
+displayOpenComplaintDialog() {
+  this.isDialogOpened = true;
+
+  // backup MAIN form state
+  this.mainFormValidBackup = this.isFormValid;
+  this.mainFormValuesBackup = this.currentFormValues;
+
+  // reset complaint state for this open (optional)
+  this.isComplaintFormValid = false;
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialogForSubmit, {
+    width: '45%'
+  });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    this.isDialogOpened = false;
+
+    // If user cancelled/closed without saving, restore immediately
+    if (!result) {
+      this.restoreMainFormState();
+    }
+  });
+}
+
+private restoreMainFormState() {
+  if (this.mainFormValidBackup !== null) this.isFormValid = this.mainFormValidBackup;
+  if (this.mainFormValuesBackup !== null) this.currentFormValues = this.mainFormValuesBackup;
+
+  this.mainFormValidBackup = null;
+  this.mainFormValuesBackup = null;
+}
+
+
+⸻
+
+Fix 4: Submit complaint dialog properly (save → update JSON → then close)
+
+Create this method:
+
+submitComplaintDialog() {
+  // Important: make complaint values the active values used by setRequestObject + recursiveDataUpdate
+  this.currentFormValues = this.complaintFormValues;
+  this.isFormValid = this.isComplaintFormValid;
+
+  // call your existing save (ignoreSaveSubmitChange = true like you already do)
+  this.saveCurrentStage(false, this.complaintDialogRef, undefined, true);
+}
+
+Now inside saveCurrentStage, after the API success, close the dialog and restore main state:
+
+Find your success block:
+
+.subscribe((res:any) => {
+  this.isDialogOpened = false;
+
+  if (ignoreSaveSubmitChange) {
+    this.recursiveDataUpdate(this.stage?.customEachStageData?.screens?.[0]?.templates ?? []);
+  }
+
+  ...
+});
+
+Update it like this:
+
+.subscribe((res:any) => {
+  this.isDialogOpened = false;
+
+  if (ignoreSaveSubmitChange) {
+    // uses currentFormValues (which is complaintFormValues right now)
+    this.recursiveDataUpdate(this.stage?.customEachStageData?.screens?.[0]?.templates ?? []);
+
+    // close dialog AFTER we updated stage JSON
+    if (dialogRef) dialogRef.close(true);
+
+    // now restore main form state
+    this.restoreMainFormState();
+  } else {
+    this.handleStageSave(exit);
+  }
+});
+
+
+⸻
+
+Why this fixes EVERYTHING you reported
+
+✅ Submit button not enabling
+Because we now use isComplaintFormValid (correct form) instead of isFormValid (main form).
+
+✅ New complaint save sends {} / null
+Because now the dialog doesn’t close early, and currentFormValues stays complaint values until save completes.
+
+✅ Old saved value not updating (Test1 still sends old)
+Because previously recursiveDataUpdate() was running with the restored main-form values, so stage JSON never updated. Now it updates correctly.
+
+✅ Reopening complaint dialog shows empty
+Because stage JSON wasn’t updated before; now it is. So viewer can prepopulate from updated stage data.
+
+⸻
+
+One extra “gotcha” to check (quick)
+
+Your complaint dialog viewer currently has:
+
+[jsonData]="stage.customEachStageData ?? jsonData"
+
+Make sure stage.customEachStageData is actually the structure that contains complaint block templates (it looks like it is, since you call stage?.customEachStageData?.screens?.[0]?.templates).
+
+⸻
+
+If you apply only ONE change: remove mat-dialog-close from Submit and close dialog only after save completes — that alone will stop the “payload empty / old values” bug. The separate isComplaintFormValid/complaintFormValues is the proper cleanup to prevent the next set of surprises.
