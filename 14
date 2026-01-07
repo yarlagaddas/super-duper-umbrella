@@ -1,0 +1,67 @@
+import { finalize, take } from 'rxjs/operators';
+
+saveCurrentStage(
+  exit: boolean,
+  dialogRef?: MatDialogRef<SwftSORConfirmationDialogComponent, any>,
+  skipSorUpdate?: boolean,
+  ignoreSaveSubmitChange: boolean = false
+) {
+  // Refresh form values/validity so request object doesn't capture stale/null data
+  this.currentStageForm?.updateValueAndValidity({ emitEvent: false });
+
+  // Build request AFTER refresh
+  const saveRequestObject = this.setRequestObject(false, exit, skipSorUpdate);
+
+  // Only set this flag for normal save/submit (not silent save)
+  if (!ignoreSaveSubmitChange) {
+    this.currentStageSaveOrSubmit = true;
+  }
+
+  this.subs.sink = this.fulfillmentService
+    .saveForm('', saveRequestObject)
+    .pipe(
+      take(1),
+      finalize(() => {
+        // Ensure this resets on both success and error
+        this.isDialogOpened = false;
+      })
+    )
+    .subscribe({
+      next: (res: any) => {
+        // Silent save flow: update local stage data
+        if (ignoreSaveSubmitChange) {
+          this.recursiveDataUpdate(
+            this.stage?.customEachStageData?.screens?.[0]?.templates ?? []
+          );
+        }
+
+        // Dialog flow: update dialog state + messages
+        if (dialogRef?.componentInstance?.data) {
+          const success =
+            !!res?.result?.results?.fulfillmentSaveResponseDTO?.sorUpdateSuccess;
+
+          dialogRef.componentInstance.data.dialogState = success
+            ? DialogStates.SUCCESS
+            : DialogStates.ERROR;
+
+          dialogRef.componentInstance.data.messages =
+            res?.result?.results?.fulfillmentSaveResponseDTO?.sorUpdateResults ?? [];
+        } else {
+          // Normal flow
+          this.handleStageSave(exit);
+        }
+      },
+      error: (err: any) => {
+        // Dialog flow: show error
+        if (dialogRef?.componentInstance?.data) {
+          dialogRef.componentInstance.data.dialogState = DialogStates.ERROR;
+          dialogRef.componentInstance.data.messages = [
+            err?.message ?? 'Save failed. Please try again.'
+          ];
+        } else {
+          // Non-dialog fallback
+          this.handleStageSave(exit);
+        }
+      }
+    });
+}
