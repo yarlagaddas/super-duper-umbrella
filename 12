@@ -1,0 +1,201 @@
+You’re seeing two separate regressions caused by the “fix” pattern we introduced:
+	1.	Dialog opens empty / loses previously entered values
+Because we’re resetting complaintFormValues to null when opening the dialog (and/or when selecting action), so the dialog has nothing to prefill from.
+	2.	Payload sends old data or {} / null for new cases
+Because [mat-dialog-close]="true" on the Submit button can close the dialog immediately (destroying the view / dynamic form) before your saveCurrentStage() builds the request object, so complaintClosureBlockData becomes {} or stays stale.
+
+So: do not use [mat-dialog-close]="true" on the Submit button. Close the dialog programmatically after the API succeeds.
+
+⸻
+
+✅ Final Fix (all changes)
+
+1) HTML – Complaint dialog footer buttons (remove mat-dialog-close from Submit)
+
+Replace your dialog footer with this:
+
+<!-- Cancel: closes dialog and returns false -->
+<button
+  mat-stroked-button
+  aria-label="Cancel Button"
+  color="primary"
+  class="dialog-button-rounded"
+  [mat-dialog-close]="false">
+  Cancel
+</button>
+
+<!-- Submit: DO NOT mat-dialog-close here -->
+<button
+  mat-raised-button
+  aria-label="Submit Button"
+  color="primary"
+  class="dialog-button-rounded"
+  (click)="saveCurrentStage(false, complaintDialogRef, undefined, true, true)"
+  [disabled]="!isComplaintFormValid">
+  Submit
+</button>
+
+✅ Key points:
+	•	Submit button: NO [mat-dialog-close]
+	•	Cancel: returns false so parent can clear state if needed
+	•	I added isComplaintFlow param as last arg = true
+
+⸻
+
+2) TS – Update method signature + close dialog after API success
+
+Update saveCurrentStage signature to include complaint flow flag:
+
+saveCurrentStage(
+  exit: boolean,
+  dialogRef?: MatDialogRef<any>,
+  skipSorUpdate?: boolean,
+  ignoreSaveSubmitChange = false,
+  isComplaintFlow = false
+) {
+  const saveRequestObject = this.setRequestObject(false, exit, skipSorUpdate);
+
+  if (!ignoreSaveSubmitChange) {
+    this.currentStageSaveOrSubmit = true;
+  }
+
+  this.subs.sink = this.fulfillmentService.saveForm('', saveRequestObject)
+    .subscribe((res: any) => {
+      this.isDialogOpened = false;
+
+      // If this was complaint dialog submit
+      if (isComplaintFlow) {
+        // mark complaint “done” for enable/disable logic
+        this.complaintDialogSubmitted = true;
+
+        // IMPORTANT: make sure local requestDetails mirrors latest values
+        // so reopening the dialog prepopulates and payload stays updated
+        this.requestDetails = {
+          ...this.requestDetails,
+          complaintClosureBlockData: this.complaintFormValues
+        };
+
+        // Close dialog ONLY AFTER API success
+        dialogRef?.close(true);
+
+        return; // don’t continue to normal flow
+      }
+
+      // existing behavior
+      if (dialogRef) {
+        if (dialogRef.componentInstance?.data) {
+          if (res?.result?.results?.fulfillmentSaveResponseDTO?.sorUpdateSuccess) {
+            dialogRef.componentInstance.data.dialogState = DialogStates.SUCCESS;
+          } else {
+            dialogRef.componentInstance.data.dialogState = DialogStates.ERROR;
+          }
+          dialogRef.componentInstance.data.messages =
+            res?.result?.results?.fulfillmentSaveResponseDTO?.sorUpdateResults;
+        }
+      } else {
+        this.handleStageSave(exit);
+      }
+    });
+}
+
+✅ This solves the “payload null / old data” issue because:
+	•	dialog stays alive until request object is built and API call is done
+	•	after success, you close it explicitly with dialogRef.close(true)
+
+⸻
+
+3) TS – Don’t reset complaint state when opening dialog (this broke prepopulate)
+
+Right now you have this in displayOpenComplaintDialog():
+
+this.complaintDialogSubmitted = false;
+this.isComplaintFormValid = false;
+this.complaintFormValues = null;
+
+Remove those three lines.
+That’s exactly why you lost previously entered values when reopening.
+
+Instead:
+
+displayOpenComplaintDialog() {
+  // DON’T wipe values here.
+  // Keep whatever we already have (either from backend or from last dialog changes)
+
+  this.complaintDialogRef = this.dialog.open(this.openComplaintDialog, {
+    width: '45%',
+    // optionally pass data if your dialog supports it
+    data: {
+      existingValues: this.complaintFormValues || this.requestDetails?.complaintClosureBlockData
+    }
+  });
+
+  this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+    // if user cancelled, clear only the "submitted" state
+    if (result !== true) {
+      this.complaintDialogSubmitted = false;
+      // OPTIONAL: if you want cancel to wipe unsaved edits, then uncomment:
+      // this.isComplaintFormValid = false;
+      // this.complaintFormValues = null;
+    }
+  });
+}
+
+✅ This restores “reopen and show previously entered data”.
+
+⸻
+
+4) TS – Only wipe complaint values when user changes action away from Cancel
+
+This part you added:
+
+if (event?.actionName !== SwftStageActions.CANCEL_REQUEST) {
+  this.complaintDialogSubmitted = false;
+  this.isComplaintFormValid = false;
+  this.complaintFormValues = null;
+}
+
+This is OK only if it truly runs only when action changes.
+Keep it, but make sure you are NOT calling setSelectedStageAction() for reason changes.
+
+If it gets called for reason changes too, then you must guard it with “previous action” check.
+
+⸻
+
+About [mat-dialog-close]="true"
+
+No, keep it off Submit.
+It’s the reason your payload is {} / null / stale because it can close the dialog before your click handler finishes collecting values.
+
+So the correct pattern is:
+	•	Submit button → (click)="saveCurrentStage(..., isComplaintFlow=true)"
+	•	On API success → dialogRef.close(true)
+
+⸻
+
+Where exactly to add this?
+
+You asked:
+
+if (isComplaintFlow) {
+  complaintDialogRef?.close(true);
+}
+
+✅ Add it inside saveCurrentStage() subscribe success, immediately after you set:
+	•	this.complaintDialogSubmitted = true;
+	•	and update requestDetails.complaintClosureBlockData
+
+(Exactly as shown in section #2.)
+
+⸻
+
+Why old saved data still shows after modifying to Test1?
+
+Because you were saving successfully, but your UI/payload was still using old requestDetails.complaintClosureBlockData (never updated locally), OR the dialog got closed early and the new values never made it into setRequestObject.
+
+The above changes fix both:
+	•	No early close
+	•	We explicitly sync requestDetails.complaintClosureBlockData = this.complaintFormValues
+
+⸻
+
+If you paste your current setRequestObject() section where you map complaintClosureBlockData, I can point out the exact line that must use this.complaintFormValues (and not some stale object).
