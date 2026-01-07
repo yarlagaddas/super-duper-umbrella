@@ -1,0 +1,124 @@
+You’re right to be nervous about touching saveCurrentStage()—but the root cause of your “Cancel → dialog submit → switch to Complete → main form valid becomes true” is almost always this:
+
+What broke (why it worked before, and fails now)
+
+When you added:
+
+[mat-dialog-close]="true"
+
+on the dialog Submit button, Angular Material closes the dialog immediately on click, before your saveCurrentStage(...) finishes (and sometimes before your main-form validity recalculates / rebinds).
+
+That means:
+	•	afterClosed() fires right away with result === true
+	•	your “complaint submitted / complaint valid” flags get set
+	•	and (this is the killer) your shared validity flags (isFormValid / dynamic form state) can remain in a stale “true” state when you switch to Complete, because nothing forces a fresh validation pass of the main form in that transition.
+
+So: don’t let the dialog auto-close itself on Submit. Close it only when your Submit flow succeeds.
+
+⸻
+
+The fix (minimal + safe)
+
+✅ Change 1: HTML – remove auto-close from dialog Submit
+
+Keep Cancel auto-close (that’s fine). Remove it from Submit.
+
+Before (current):
+
+<button
+  mat-raised-button
+  [mat-dialog-close]="true"
+  (click)="saveCurrentStage(false, complaintDialogRef, undefined, true)"
+  [disabled]="!isComplaintFormValid">
+  Submit
+</button>
+
+After (fix):
+
+<button
+  mat-raised-button
+  (click)="saveCurrentStage(false, complaintDialogRef, undefined, true)"
+  [disabled]="!isComplaintFormValid">
+  Submit
+</button>
+
+Cancel stays:
+
+<button mat-stroked-button [mat-dialog-close]="false">Cancel</button>
+
+
+⸻
+
+✅ Change 2: TS – close the dialog manually ONLY on success
+
+You asked: “Again where should I add complaintDialogRef?.close(true)?”
+
+Add it inside saveCurrentStage(), in the success path of your API call, only when it’s complaint flow.
+
+Example (place exactly inside your .subscribe((res:any)=> { ... }) block, after you confirm success and before returning):
+
+saveCurrentStage(exit: boolean, dialogRef?: MatDialogRef<any>, skipSorUpdate?: boolean, ignoreSaveSubmitChange = false) {
+  const saveRequestObject = this.setRequestObject(false, exit, skipSorUpdate);
+
+  this.subs.sink = this.fulfillmentService.saveForm("", saveRequestObject)
+    .subscribe((res: any) => {
+
+      // your existing code...
+
+      const isComplaintFlow = !!dialogRef; // or use your boolean param if you have one
+
+      // ✅ only close dialog on success
+      const isSuccess = /* use your existing success condition here */ true;
+
+      if (isSuccess && isComplaintFlow) {
+        dialogRef?.close(true);   // <==== ADD THIS HERE
+        return;                   // prevents falling into other flows accidentally
+      }
+
+      // existing non-dialog flow
+      this.handleStageSave(exit);
+    });
+}
+
+Key point: the dialog should close with true only after success.
+If user clicks Cancel, it closes with false via [mat-dialog-close]="false".
+
+⸻
+
+✅ Change 3: TS – keep your afterClosed() logic (but now it will be correct)
+
+Your current afterClosed() is fine if the dialog only returns true on real success.
+
+this.complaintDialogRef.afterClosed().subscribe((result: any) => {
+  this.complaintDialogSubmitted = (result === true);
+
+  if (result !== true) {
+    this.isComplaintFormValid = false;
+    this.complaintFormValues = null;
+  }
+});
+
+This will now behave correctly because:
+	•	Submit doesn’t auto-close anymore
+	•	only saveCurrentStage() closes it with true (on success)
+
+⸻
+
+Answer to your original question
+
+“If I remove [mat-dialog-close]="true", do all other scenarios still work?”
+
+✅ Yes, as long as you add the manual close in saveCurrentStage() success path (Change 2).
+Otherwise, the dialog will never close on Submit.
+
+⸻
+
+Why this is the safest approach (and won’t create “one fix leads to another”)
+	•	You are not changing validation rules
+	•	You are not changing Complete flow
+	•	You are not changing dynamic required-fields logic
+	•	You’re only preventing a premature dialog close that causes stale validity state
+
+This is the smallest change that directly targets what broke.
+
+If you want, paste your saveCurrentStage() success condition (the exact if (...) you use to decide success), and I’ll point to the exact line to insert the dialogRef.close(true) so it’s 100% aligned with your code.
