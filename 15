@@ -1,0 +1,3 @@
+console.log('complaintFormValues before save:', this.complaintFormValues);
+console.log('currentFormValues before save:', this.currentFormValues);
+console.log('closure data before save:', this.getComplaintClosureValueFromUUID());
