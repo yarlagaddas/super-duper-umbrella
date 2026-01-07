@@ -1,0 +1,18 @@
+const overallSuccess = !!res?.result?.success;
+
+if (overallSuccess) {
+  // ✅ Update local values so reopening shows latest without refresh
+  if (this.complaintFormValues) {
+    this.currentFormValues = this.complaintFormValues;
+  }
+
+  // ✅ reset dialog buffer so future opens rely on DB/currentFormValues
+  this.complaintFormValues = null;
+
+  // ✅ close dialog only on overall save success
+  dialogRef?.close(true);
+} else {
+  // keep dialog open; show error state/message if you already do
+}
+
+
