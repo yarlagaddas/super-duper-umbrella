@@ -1,0 +1,33 @@
+// Prefer dialog values (multi-stage) even when isFinalStage=false
+let value: any;
+
+if (this.complaintFormValues?.length) {
+  // complaintFormValues comes like: { dataId, elementName, value, ... }
+  const match = this.complaintFormValues.find((v: any) =>
+    v?.dataId === templ?.templateData?.dataId ||
+    v?.elementName === templ?.templateData?.name
+  );
+  value = match?.value;
+} else if (this.stage?.isFinalStage) {
+  value = this.currentFormValues?.find((val: any) => val?.uid === templ?.templateData?.UID)?.value;
+} else {
+  value = templ?.templateData?.defaultValue;
+}
+
+
+
+const overallSuccess = res?.result?.success === true;
+
+// keep your dialog state messaging if you want
+if (dialogRef?.componentInstance?.data) {
+  const sorOk = res?.result?.results?.fulfillmentSaveResponseDTO?.sorUpdateSuccess === true;
+  dialogRef.componentInstance.data.dialogState = sorOk ? DialogStates.SUCCESS : DialogStates.ERROR;
+  dialogRef.componentInstance.data.messages =
+    res?.result?.results?.fulfillmentSaveResponseDTO?.sorUpdateResults;
+}
+
+// ✅ close based on overall save
+if (overallSuccess) {
+  dialogRef?.close(true);
+  return;
+}
