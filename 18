@@ -1,0 +1,33 @@
+if (dialogRef) {
+  if (dialogRef.componentInstance?.data) {
+    if (res.result?.results?.fulfillmentSaveResponseDTO?.sorUpdateSuccess) {
+      dialogRef.componentInstance.data.dialogState = DialogStates.SUCCESS;
+    } else {
+      dialogRef.componentInstance.data.dialogState = DialogStates.ERROR;
+    }
+
+    dialogRef.componentInstance.data.messages =
+      res.result?.results?.fulfillmentSaveResponseDTO?.sorUpdateResults;
+  }
+
+  if (overallSuccess) {
+
+    // ✅ 1. copy latest dialog values into local truth
+    if (this.complaintFormValues?.length) {
+      this.currentFormValues = [...this.complaintFormValues];
+    }
+
+    // ✅ 2. push values into templates so reopen shows updated values
+    this.recursiveDataUpdate(
+      this.stage?.customEachStageData?.screens?.[0]?.templates ?? []
+    );
+
+    // ✅ 3. clear dialog buffer
+    this.complaintFormValues = null;
+
+    // ✅ 4. close dialog
+    dialogRef.close(true);
+  }
+
+  return;
+}
