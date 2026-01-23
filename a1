@@ -1,0 +1,159 @@
+Cool — here’s only the code you need to implement Documents / Correspondence tab enable/disable based on the same API restrictions you already get for kebab.
+
+I’m giving you a clean solution that:
+	•	Works when user expands a row (even if they never click kebab)
+	•	Uses one helper to keep kebab + tabs consistent
+	•	Doesn’t force you to do caching right now (we’ll do that later)
+
+⸻
+
+1) TS: Add these properties + helper methods
+
+Put these inside your SwftKendoDataGridComponent class.
+
+// ---- Tab disable flags (NEW) ----
+public disableDocumentsTab = false;
+public disableCorrespondenceTab = false;
+
+// Keep the current restrictions for the currently-active row (optional but useful)
+private currentRestrictions: string[] = [];
+
+// Apply restrictions to BOTH kebab menu + tabs (NEW)
+private applyRestrictions(restrictions: string[]) {
+  this.currentRestrictions = restrictions;
+
+  // existing kebab menu list (reuse your function)
+  this.data = this.loadActionDetails(restrictions);
+
+  // NEW: tabs
+  this.disableDocumentsTab = restrictions.includes('View Request Documents');
+  this.disableCorrespondenceTab = restrictions.includes('View Request Correspondences');
+}
+
+// Fetch restrictions for a row (NEW) - called from expand (and optionally from menuClick)
+private fetchRestrictionsForRow(dataItem: any): void {
+  // safe defaults (allow tabs unless API says to disable)
+  this.applyRestrictions([]);
+
+  if (!dataItem?.caseNumber) return;
+
+  // keep same rule you already use in menuClick
+  if (dataItem?.isRequestTypeSearchRestricted === true) return;
+
+  const payload = {
+    intakeRequestCaseId: dataItem.caseNumber,
+    requestTypeId: dataItem.requestTypeId || 0,
+    userNbk: this.requested_by,
+    userName: '',
+    channel: 'SWFT_INTERNAL'
+  };
+
+  this.fulfillmentService.validateUserAccessToRequestType('', payload).subscribe({
+    next: (res: any) => {
+      let restrictions: string[] = [];
+      const raw = res?.result?.results?.channelRestrictions;
+
+      if (raw) {
+        restrictions = raw.split(',').map((s: string) => s.trim());
+      }
+
+      this.applyRestrictions(restrictions);
+    },
+    error: () => {
+      // fallback: allow everything
+      this.applyRestrictions([]);
+    }
+  });
+}
+
+
+⸻
+
+2) TS: Update onExpand() to call the restriction API (for tabs)
+
+In your existing onExpand(event) method, add the call at the end:
+
+onExpand(event: any) {
+  this.dataItem = event.dataItem;
+
+  for (let i = 0; i < this.gridData?.length; i++) {
+    if (i !== event.index) {
+      this.grid?.collapseRow(i);
+    }
+  }
+
+  this.clearTableResults(false);
+  this.expandEmitter.emit({ caseNumber: event?.dataItem?.caseNumber, caseInfo: event });
+
+  this.enableUploadDoc(event?.dataItem);
+
+  // ✅ NEW: fetch restrictions to disable/enable tabs
+  this.fetchRestrictionsForRow(event?.dataItem);
+}
+
+
+⸻
+
+3) TS: (Recommended) Update menuClick() to reuse the same logic
+
+If you want kebab + tabs always consistent, replace the API block inside menuClick() with just:
+
+menuClick(event: any) {
+  this.dataItem = event;
+  this.selectionEmitter.emit(this.dataItem);
+
+  // ✅ NEW: reuse same restrictions logic (will update kebab + tabs)
+  this.fetchRestrictionsForRow(this.dataItem);
+}
+
+If you prefer to keep your existing menuClick() API logic for now, you can — but then you must call applyRestrictions(restrictions) in the success handler instead of this.data = this.loadActionDetails(restrictions).
+
+⸻
+
+4) HTML: Disable the two tabs using the flags
+
+In your detail template where you have kendo-tabstrip-tab, update Documents and Correspondence tabs like this:
+
+<kendo-tabstrip-tab title="Documents" [disabled]="disableDocumentsTab">
+  <ng-template kendoTabContent>
+    <swft-kendo-data-grid
+      [gridData]="docResults"
+      [autoSize]="true"
+      [sortable]="true"
+      [filterable]="'menu'"
+      [columnData]="docColumnRef"
+      [dataExpansion]="false"
+      [docFlag]="true"
+      [height]="500">
+    </swft-kendo-data-grid>
+  </ng-template>
+</kendo-tabstrip-tab>
+
+<kendo-tabstrip-tab title="Correspondence" [disabled]="disableCorrespondenceTab">
+  <ng-template kendoTabContent>
+    <swft-kendo-data-grid
+      [gridData]="correspondenceResults"
+      [autoSize]="true"
+      [sortable]="true"
+      [filterable]="'menu'"
+      [columnData]="correspondanceColDefs"
+      [dataExpansion]="false"
+      [correspondenceFlag]="true"
+      [height]="500">
+    </swft-kendo-data-grid>
+  </ng-template>
+</kendo-tabstrip-tab>
+
+
+⸻
+
+Restriction strings used (exact match)
+
+'View Request Documents'
+'View Request Correspondences'
+
+If backend returns slightly different names in some cases, we can normalize later (easy).
+
+⸻
+
+If you want, paste the exact channelRestrictions string you get from API once (a sample response), and I’ll ensure the matches are bulletproof.
