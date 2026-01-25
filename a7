@@ -1,0 +1,188 @@
+You’re not “wrong” — what you’re seeing is a classic Kendo Grid layout reflow issue:
+	•	After you filter, Kendo recalculates rows/data.
+	•	When you expand, the detail template actually renders, but the grid/container doesn’t recompute height until a scroll happens (scroll triggers a reflow/resize internally).
+	•	That’s why “scroll → details appear”.
+
+✅ The code you added (forceGridReflow() + ngAfterViewChecked) is fine.
+The missing piece is: you’re not setting pendingReflow = true at the moments that matter (filter/dataStateChange/expand).
+
+⸻
+
+Fix (minimal change): set pendingReflow = true when filtering + when expanding
+
+1) In dataStateChange(...) (filter/sort/page triggers this)
+
+public dataStateChange(state: any): void {
+  this.state = state;
+
+  // whatever you do to apply filtering to gridData...
+  // this.gridData = process(...)
+
+  this.pendingReflow = true;   // ✅ IMPORTANT
+}
+
+2) In onExpand(...)
+
+Right after you set this.dataItem / selected tab etc:
+
+onExpand(event: any) {
+  this.dataItem = event?.dataItem;
+
+  this.selectedTab = 'DETAILS';
+
+  // ✅ ensure layout recalculates for detail row
+  this.pendingReflow = true;
+
+  // optional but helps if change detection timing is tight
+  // this.cdr.detectChanges();
+}
+
+You already have ngAfterViewChecked() calling requestAnimationFrame(() => this.forceGridReflow()).
+That’s perfect — it just needs pendingReflow to be turned on when filter/expand happens.
+
+⸻
+
+Also update ngOnChanges to trigger reflow when parent sends new data
+
+Your current ngOnChanges only handles the toggleDirective. Add this:
+
+ngOnChanges(changes: SimpleChanges): void {
+  if (changes['gridData']) {
+    this.pendingReflow = true;   // ✅ when parent updates data
+  }
+
+  // keep your existing code
+  if (changes['gridData'] && changes['gridData'].currentValue?.length > 0 && this.toggleDirective()) {
+    setTimeout(() => this.toggleDirective().applyAttributes(), 0);
+  }
+}
+
+
+⸻
+
+If you want the most reliable “Kendo-native” reflow
+
+Instead of only dispatching window resize, call the grid resize too:
+
+private forceGridReflow(): void {
+  requestAnimationFrame(() => {
+    this.grid?.resize?.();                 // ✅ best if available
+    window.dispatchEvent(new Event('resize'));
+  });
+}
+
+
+⸻
+
+Why it only breaks after filter (your exact scenario)
+
+Filtering changes:
+	•	row heights
+	•	rendered DOM
+	•	expansion container height
+
+Kendo sometimes won’t repaint the detail container until a resize/scroll. Your scroll is just “accidentally” doing what we need. We’re making it deterministic.
+
+⸻
+
+If you paste your dataStateChange() method (just that method), I’ll drop the pendingReflow exactly where your filtering logic is applied so it compiles first shot.
+
+
+---------------------------------
+
+
+
+
+
+
+
+Perfect — this screenshot tells me exactly why you still see the “details appear only after scroll” after filtering.
+
+You already have the flag:
+
+private pendingReflow = false;
+
+…but in your dataStateChange(...) you never set it to true, so ngAfterViewChecked() never fires your reflow after a filter/sort/page event.
+
+Do this (1-line fix in the right place)
+
+Add this.pendingReflow = true; at the end of dataStateChange (after you collapse/clear):
+
+public dataStateChange(state: DataStateChangeEvent): void {
+  // store filter state if you need it
+  this.filter = state.filter ?? { logic: 'and', filters: [] };
+
+  // collapse on filter/sort/page
+  this.selectedTab = 'DETAILS';
+  this.clearTableResults(true);
+
+  // ✅ this is the missing piece
+  this.pendingReflow = true;
+}
+
+That’s it.
+
+Why this fixes it
+
+After filtering, Kendo updates DOM heights. The detail row is there, but layout doesn’t recalc until scroll/resize. Your ngAfterViewChecked() + forceGridReflow() is the right approach — it just wasn’t being triggered because pendingReflow never flips to true on filter.
+
+⸻
+
+Also make sure you do the same on expand (if not already)
+
+In onExpand(...) (right after setting dataItem), add:
+
+this.pendingReflow = true;
+
+
+⸻
+
+If you want, paste your onExpand() (just that method) and I’ll point out the exact line to place it so you don’t trigger extra reflows.
+
+
+
+---------------------------------
+
+
+
+Yes — that’s correct. 👍
+And in your current code, the only missing thing is: set pendingReflow = true when filter/sort/page happens (dataStateChange) (and ideally also on expand).
+
+Minimal, correct changes for your repo
+
+1) dataStateChange(...)  ✅ (this is the main fix)
+Your screenshot shows:
+
+this.selectedTab = 'DETAILS';
+this.clearTableResults(true);
+
+Add one line after that:
+
+public dataStateChange(state: DataStateChangeEvent): void {
+  this.filter = state.filter ?? { logic: 'and', filters: [] };
+
+  this.selectedTab = 'DETAILS';
+  this.clearTableResults(true);
+
+  this.pendingReflow = true; // ✅ required
+}
+
+2) onExpand(...) ✅ (recommended)
+Right after you set this.dataItem (and selectedTab), add:
+
+this.pendingReflow = true;
+
+
+⸻
+
+About the “other” suggestions you pasted
+	•	ngOnChanges pendingReflow for gridData → optional. Only needed if the parent replaces gridData frequently and you still see layout glitches.
+	•	this.grid?.resize?.() → nice if available, but your current window.dispatchEvent(new Event('resize')) is usually enough.
+
+Why I’m not “changing again”
+
+It’s the same solution: you already wired ngAfterViewChecked() + forceGridReflow().
+It won’t run unless pendingReflow becomes true.
+Filtering is the moment where that wasn’t happening — that’s why scroll “fixes” it.
+
+If you apply just the dataStateChange line and it still happens only after expand, then add it to onExpand too.
