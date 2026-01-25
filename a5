@@ -1,0 +1,132 @@
+Yes — remove the top one. You must have only ONE expandEmitter.emit(...).
+
+Right now in your screenshot, you still have two emits (one simple + one with expandReqId). That can absolutely cause the “weird / partial details until resize” behavior because the parent can fire twice and update the detail area twice.
+
+Also: if you cannot change the parent, then do NOT send expandReqId at all (because the parent handler may be typed to only accept { caseNumber, caseInfo }).
+
+Below is the clean, correct step-by-step.
+
+⸻
+
+Step 1 — Fix onExpand: keep ONE emit only (no expandReqId)
+
+Replace your onExpand with this structure:
+
+onExpand(event: any) {
+  this.dataItem = event?.dataItem;
+
+  // 1) Default tab
+  this.selectedTab = 'DETAILS';
+
+  // 2) Only one row expanded
+  for (let i = 0; i < (this.gridData?.length ?? 0); i++) {
+    if (i !== event?.index) {
+      this.grid?.collapseRow(i);
+    }
+  }
+
+  // 3) Clear previous detail results (but DO NOT collapse again here)
+  this.clearTableResults(false);
+
+  // 4) permissions + upload
+  this.enableUploadDoc(event?.dataItem);
+  this.ensureRestrictionsLoaded(event?.dataItem);
+
+  // ✅ 5) ONLY ONE EMIT (KEEP THIS ONE)
+  this.expandEmitter.emit({
+    caseNumber: event?.dataItem?.caseNumber,
+    caseInfo: event
+  });
+
+  // 6) Optional: reflow (but see Step 3 for a better place)
+  // this.forceGridReflow();
+}
+
+✅ This answers your question: remove the “top/first emit”. Keep only one.
+
+⸻
+
+Step 2 — Remove expandReqId completely (since you can’t change parent)
+
+In your code you currently have:
+
+const myExpandId = ++this.expandReqId;
+...
+this.expandEmitter.emit({ ..., expandReqId: myExpandId });
+
+If the parent is not changed, delete these lines:
+	•	private expandReqId = 0;
+	•	const myExpandId = ++this.expandReqId;
+	•	expandReqId: myExpandId
+
+Because otherwise the parent might not accept the payload shape (or it will ignore it, but you don’t gain anything without the parent guard).
+
+⸻
+
+Step 3 — Put forceGridReflow() in the correct place (after details are rendered)
+
+The “it fixes when I drag devtools” is a classic layout/resize timing issue. Calling forceGridReflow() inside onExpand() is often too early (DOM not finished rendering detail template yet).
+
+Do this instead:
+
+A) Add a flag
+
+private pendingReflow = false;
+
+B) In onExpand set the flag after emit
+
+this.expandEmitter.emit({
+  caseNumber: event?.dataItem?.caseNumber,
+  caseInfo: event
+});
+
+this.pendingReflow = true;
+
+C) Run the reflow in ngAfterViewChecked (runs after DOM updates)
+
+ngAfterViewChecked(): void {
+  if (!this.pendingReflow) return;
+  this.pendingReflow = false;
+
+  requestAnimationFrame(() => this.forceGridReflow());
+}
+
+✅ This is the biggest practical fix when the detail panel renders “partially” until a resize happens.
+
+⸻
+
+Step 4 — Keep your tab logic as-is (you implemented it correctly)
+
+Your HTML looks good:
+	•	[selected]="selectedTab === 'DETAILS'" etc.
+	•	[disabled]="restrictionsLoading || disableDocumentsTab" etc.
+	•	(tabSelect)="onTabSelect($event)"
+
+Just make sure onTabSelect doesn’t switch to a disabled tab:
+
+onTabSelect(e: any) {
+  if (e?.title === 'Details') this.selectedTab = 'DETAILS';
+  if (e?.title === 'Documents' && !this.restrictionsLoading && !this.disableDocumentsTab) this.selectedTab = 'DOCS';
+  if (e?.title === 'Correspondence' && !this.restrictionsLoading && !this.disableCorrespondenceTab) this.selectedTab = 'CORR';
+}
+
+
+⸻
+
+Exactly what you should change in your screenshot right now
+
+In your screenshot you have:
+	1.	this.expandEmitter.emit({ caseNumber, caseInfo });  ✅ REMOVE THIS
+	2.	this.expandEmitter.emit({ caseNumber, caseInfo, expandReqId: myExpandId }); ✅ If parent not changed → REMOVE expandReqId and keep only this emit (but without expandReqId)
+
+So final = only one emit and it should be the simple payload:
+
+this.expandEmitter.emit({
+  caseNumber: event?.dataItem?.caseNumber,
+  caseInfo: event
+});
+
+
+⸻
+
+If you want, paste your current onExpand() (just the method) as text (not screenshot) and I’ll rewrite it cleanly in your exact variable names so you can copy/paste without guessing.
