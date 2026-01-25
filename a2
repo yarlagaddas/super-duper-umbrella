@@ -1,0 +1,326 @@
+Below is the full working logic (TS + HTML edits) that covers:
+
+✅ Kebab enable/disable from channelRestrictions
+✅ Tabs (Documents + Correspondence) enable/disable from channelRestrictions
+✅ No “fast click before disabled” (pessimistic disable while API loads)
+✅ Fix “filter/scroll makes loader stuck / details not default” (stop destructive logic in dataStateChange)
+✅ Details tab always default on expand (selectedIndex controlled)
+✅ Only one row expanded at a time (keeps your existing loop)
+
+⸻
+
+Step-by-step changes
+
+Step 1 — HTML: pass $event into dataStateChange
+
+Change this:
+
+(dataStateChange)="dataStateChange()"
+
+To this:
+
+(dataStateChange)="dataStateChange($event)"
+
+
+⸻
+
+Step 2 — HTML: control tab selection + disable Docs/Correspondence properly
+
+Inside your kendoGridDetailTemplate, change your TabStrip to use selectedIndex.
+
+✅ Replace your tabstrip opening tag with:
+
+<kendo-tabstrip
+  [(selectedIndex)]="selectedTabIndex"
+  (tabSelect)="onTabSelect($event)"
+>
+
+✅ Update your tabs like this
+
+Details tab (no [selected]="true" anymore):
+
+<kendo-tabstrip-tab title="Details">
+  <ng-template kendoTabContent>
+    <!-- your existing Details content -->
+  </ng-template>
+</kendo-tabstrip-tab>
+
+Documents tab:
+
+<kendo-tabstrip-tab
+  title="Documents"
+  [disabled]="restrictionsLoading || disableDocumentsTab"
+>
+  <ng-template kendoTabContent>
+    <swft-kendo-data-grid
+      [gridData]="docResults"
+      [autoSize]="true"
+      [sortable]="true"
+      [filterable]="'menu'"
+      [columnData]="docColumnRef"
+      [dataExpansion]="false"
+      [docFlag]="true"
+      [height]="500"
+    >
+    </swft-kendo-data-grid>
+  </ng-template>
+</kendo-tabstrip-tab>
+
+Correspondence tab:
+
+<kendo-tabstrip-tab
+  title="Correspondence"
+  [disabled]="restrictionsLoading || disableCorrespondenceTab"
+>
+  <ng-template kendoTabContent>
+    <swft-kendo-data-grid
+      [gridData]="correspondenceResults"
+      [autoSize]="true"
+      [sortable]="true"
+      [filterable]="'menu'"
+      [columnData]="correspondanceColDefs"
+      [dataExpansion]="false"
+      [correspondenceFlag]="true"
+      [height]="500"
+    >
+    </swft-kendo-data-grid>
+  </ng-template>
+</kendo-tabstrip-tab>
+
+
+⸻
+
+Step 3 — TS: Add the complete restriction + tab selection logic
+
+Add these fields inside the component class:
+
+import { DataStateChangeEvent } from '@progress/kendo-angular-grid';
+
+public selectedTabIndex = 0; // ✅ Details always default
+
+public restrictionsLoading = false;
+public disableDocumentsTab = true;        // pessimistic: block until we know
+public disableCorrespondenceTab = true;   // pessimistic: block until we know
+
+private restrictionCache = new Map<string, string[]>(); // rowKey -> restrictions
+private activeRestrictionKey: string | null = null;
+private restrictionsReqId = 0; // guards against stale responses
+
+
+⸻
+
+Step 4 — TS: Replace your dataStateChange() with this safe version
+
+This is the big fix for the “filter/scroll loader weirdness”.
+
+public dataStateChange(state: DataStateChangeEvent): void {
+  // store filter state if you need it
+  this.filter = state.filter ?? { logic: 'and', filters: [] };
+
+  // ✅ collapse on filter/sort/page is OK (your current behavior),
+  // but do it in a controlled way:
+  this.selectedTabIndex = 0;          // Details default for next expand
+  this.clearTableResults(true);       // collapses rows + clears arrays
+
+  // ❌ DO NOT autoFitColumns here; it causes thrash/lag after filter
+  // If you really want it, debounce it (optional) — I’m leaving it out.
+}
+
+Important: Your current bug comes from autoFitColumns + clearTableResults(true) firing repeatedly on state changes.
+This version keeps collapse behavior but avoids UI thrash and makes tab selection stable.
+
+⸻
+
+Step 5 — TS: Tab selection handler (optional but good)
+
+public onTabSelect(e: any): void {
+  this.selectedTabIndex = e?.index ?? 0;
+}
+
+
+⸻
+
+Step 6 — TS: Add these restriction helpers
+
+A) Stable key for cache
+
+private restrictionKey(item: any): string {
+  const caseNumber = item?.caseNumber ?? '';
+  const requestTypeId = item?.requestTypeId ?? 0;
+  const channel = 'SWFT_INTERNAL';
+  return `${caseNumber}|${requestTypeId}|${channel}`;
+}
+
+B) Apply restrictions to kebab + tabs
+
+private applyRestrictions(restrictions: string[]) {
+  // kebab menu
+  this.data = this.loadActionDetails(restrictions);
+
+  // tabs
+  this.disableDocumentsTab = restrictions.includes('View Request Documents');
+  this.disableCorrespondenceTab = restrictions.includes('View Request Correspondences');
+}
+
+C) Load restrictions (cache + race-safe + pessimistic)
+
+private ensureRestrictionsLoaded(item: any): void {
+  // pessimistic while loading: block tabs to prevent fast clicks
+  this.restrictionsLoading = true;
+  this.disableDocumentsTab = true;
+  this.disableCorrespondenceTab = true;
+
+  if (!item?.caseNumber) {
+    // allow all if no id
+    this.applyRestrictions([]);
+    this.restrictionsLoading = false;
+    return;
+  }
+
+  // keep your same rule
+  if (item?.isRequestTypeSearchRestricted === true) {
+    this.applyRestrictions([]);
+    this.restrictionsLoading = false;
+    return;
+  }
+
+  const key = this.restrictionKey(item);
+  this.activeRestrictionKey = key;
+
+  // cache hit
+  const cached = this.restrictionCache.get(key);
+  if (cached) {
+    this.applyRestrictions(cached);
+    this.restrictionsLoading = false;
+    return;
+  }
+
+  // stale response guard
+  const reqId = ++this.restrictionsReqId;
+
+  const payload = {
+    intakeRequestCaseId: item.caseNumber,
+    requestTypeId: item.requestTypeId || 0,
+    userNbk: this.requested_by,
+    userName: '',
+    channel: 'SWFT_INTERNAL'
+  };
+
+  this.fulfillmentService.validateUserAccessToRequestType('', payload).subscribe({
+    next: (res: any) => {
+      // ignore if user moved to another row while request was in-flight
+      if (reqId !== this.restrictionsReqId) return;
+      if (this.activeRestrictionKey !== key) return;
+
+      const raw = res?.result?.results?.channelRestrictions ?? '';
+      const restrictions = raw ? raw.split(',').map((s: string) => s.trim()) : [];
+
+      this.restrictionCache.set(key, restrictions);
+      this.applyRestrictions(restrictions);
+      this.restrictionsLoading = false;
+    },
+    error: () => {
+      if (reqId !== this.restrictionsReqId) return;
+      if (this.activeRestrictionKey !== key) return;
+
+      // on error: allow all (or block all if security sensitive)
+      const restrictions: string[] = [];
+      this.restrictionCache.set(key, restrictions);
+
+      this.applyRestrictions(restrictions);
+      this.restrictionsLoading = false;
+    }
+  });
+}
+
+
+⸻
+
+Step 7 — TS: Update onExpand() (Details default + one row expanded + restrictions)
+
+Replace your onExpand(event) with this pattern (keep your existing pieces, just add the marked lines):
+
+onExpand(event: any) {
+  this.dataItem = event?.dataItem;
+
+  // ✅ always show Details tab on expand
+  this.selectedTabIndex = 0;
+
+  // keep your existing "only one expanded row" logic
+  for (let i = 0; i < this.gridData?.length; i++) {
+    if (i !== event.index) {
+      this.grid?.collapseRow(i);
+    }
+  }
+
+  this.clearTableResults(false);
+
+  // existing: triggers parent API for Details
+  this.expandEmitter.emit({
+    caseNumber: event?.dataItem?.caseNumber,
+    caseInfo: event
+  });
+
+  this.enableUploadDoc(event?.dataItem);
+
+  // ✅ NEW: permissions API for tabs + kebab (cached)
+  this.ensureRestrictionsLoaded(event?.dataItem);
+}
+
+
+⸻
+
+Step 8 — TS: Update menuClick() (no duplicate API calls because cache)
+
+menuClick(event: any) {
+  this.dataItem = event;
+  this.selectionEmitter.emit(this.dataItem);
+
+  // ✅ ensures kebab permissions even if user didn’t expand
+  this.ensureRestrictionsLoaded(this.dataItem);
+}
+
+
+⸻
+
+Step 9 — Clear cache on refresh (recommended)
+
+In your existing refresh():
+
+refresh() {
+  this.restrictionCache.clear();
+  this.activeRestrictionKey = null;
+  this.restrictionsReqId = 0;
+
+  this.clearTableResults(true);
+  this.refreshEmitter.emit(true);
+}
+
+
+⸻
+
+✅ Final behavior you asked for
+
+✅ Only one row expands at a time
+
+Yes (your loop stays).
+
+✅ Filter collapses expanded rows
+
+Yes (dataStateChange calls clearTableResults(true)).
+
+✅ Details tab always default when expands
+
+Yes (selectedTabIndex = 0 inside onExpand + tabstrip uses selectedIndex).
+
+✅ No more “click documents quickly before disable”
+
+Yes (pessimistic disable while restrictionsLoading is true).
+
+✅ No more stuck loader / weird scroll behavior after filter
+
+Yes (because we removed the repeated destructive + layout thrash pattern from dataStateChange and made tab selection state stable).
+
+⸻
+
+If you want, I can also add one small polish: when restrictions are loading, show a tiny “Checking access…” text near tabs so user understands why Docs/Correspondence are disabled for a moment.
