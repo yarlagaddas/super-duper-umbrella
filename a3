@@ -1,0 +1,84 @@
+Yes ✅ — exactly.
+
+The changes I gave you (Option A) are specifically to fix the compile error you’re seeing:
+
+❌ “Can’t bind to ‘selectedIndex’ since it isn’t a known property of ‘kendo-tabstrip’”
+
+That error happens because in your Kendo version (21.1.0),
+<kendo-tabstrip> does NOT support selectedIndex as an input binding.
+
+So Angular correctly fails the build.
+
+⸻
+
+✅ What the fix does
+
+Instead of using:
+
+<kendo-tabstrip [(selectedIndex)]="selectedTabIndex">   ❌
+
+We switch to the API that your Kendo version actually supports:
+
+✔ Control selection at the TAB level
+
+<kendo-tabstrip (tabSelect)="onTabSelect($event)">
+
+  <kendo-tabstrip-tab
+    title="Details"
+    [selected]="selectedTab === 'DETAILS'">
+  </kendo-tabstrip-tab>
+
+  <kendo-tabstrip-tab
+    title="Documents"
+    [selected]="selectedTab === 'DOCS'"
+    [disabled]="restrictionsLoading || disableDocumentsTab">
+  </kendo-tabstrip-tab>
+
+  <kendo-tabstrip-tab
+    title="Correspondence"
+    [selected]="selectedTab === 'CORR'"
+    [disabled]="restrictionsLoading || disableCorrespondenceTab">
+  </kendo-tabstrip-tab>
+
+</kendo-tabstrip>
+
+✔ TS controls the selection state
+
+public selectedTab: 'DETAILS' | 'DOCS' | 'CORR' = 'DETAILS';
+
+onExpand(event: any) {
+  this.selectedTab = 'DETAILS';   // always default to Details
+}
+
+onTabSelect(e: any) {
+  if (e.title === 'Details') this.selectedTab = 'DETAILS';
+  if (e.title === 'Documents') this.selectedTab = 'DOCS';
+  if (e.title === 'Correspondence') this.selectedTab = 'CORR';
+}
+
+
+⸻
+
+🎯 Result
+
+✔ Build error goes away
+✔ Compatible with your Kendo version
+✔ Details tab always defaults when expanding
+✔ No schema hacks (NO_ERRORS_SCHEMA)
+✔ No unsafe bindings
+✔ Clean Angular pattern
+
+⸻
+
+⚠️ Important
+
+Do NOT use:
+
+NO_ERRORS_SCHEMA
+CUSTOM_ELEMENTS_SCHEMA
+
+That would only hide the error — not fix it — and will cause runtime bugs later.
+
+⸻
+
+✅ So yes — these changes are exactly to fix the error you’re seeing.
