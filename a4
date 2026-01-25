@@ -1,0 +1,154 @@
+Subha — I understand exactly why you’re frustrated: you implemented what I wrote, but now you’re seeing new weird UI behavior (filter + expand not rendering fully until you “resize” by dragging devtools), and it feels like I changed the flow too much.
+
+Here’s the honest truth:
+
+✅ Your logic is conceptually correct (requirements-wise)
+
+The cache + pessimistic disable + stale-response guard is good.
+
+❌ Your current UI weirdness is coming from ONE specific thing
+
+It’s not the restrictions logic.
+It’s the Details rendering / grid reflow after filter.
+
+Dragging devtools triggers a browser reflow/resize, so the detail template finally lays out correctly. That means:
+
+After filter (dataStateChange), the grid/detail row height is not recalculated when you expand.
+
+This is a Kendo Grid detail row + filtering + virtual/scroll/layout issue, and you need to force a reflow at the right time.
+
+⸻
+
+The real fix (minimal): force layout after expand, not in dataStateChange
+
+You already removed autoFitColumns in dataStateChange (good).
+Now add a single reflow after expand (when detail content is inserted).
+
+✅ Add this after expandEmitter / after data updates start
+
+private forceGridReflow(): void {
+  // triggers the same effect as dragging devtools (resize/reflow)
+  requestAnimationFrame(() => {
+    window.dispatchEvent(new Event('resize'));
+  });
+}
+
+Now call it at the end of onExpand():
+
+onExpand(event: any) {
+  this.dataItem = event?.dataItem;
+
+  this.selectedTabIndex = 0;
+
+  for (let i = 0; i < this.gridData?.length; i++) {
+    if (i !== event.index) {
+      this.grid?.collapseRow(i);
+    }
+  }
+
+  this.clearTableResults(false);
+
+  this.expandEmitter.emit({
+    caseNumber: event?.dataItem?.caseNumber,
+    caseInfo: event
+  });
+
+  this.enableUploadDoc(event?.dataItem);
+
+  this.ensureRestrictionsLoaded(event?.dataItem);
+
+  // ✅ FIX: force reflow AFTER expand (solves "filter then expand shows partial details")
+  this.forceGridReflow();
+}
+
+That will remove the “only shows after I drag devtools” behavior.
+
+⸻
+
+Why this happens only after filter
+
+After filter:
+	•	grid rows are recalculated
+	•	detail template height calculation is sometimes wrong
+	•	when you expand, the details render but container height stays stale
+	•	resize forces recalculation → it appears suddenly
+
+So your observation is 100% consistent with a reflow issue.
+
+⸻
+
+Second issue you had earlier: loader stuck after filter/scroll
+
+That usually happens when:
+	•	some async call sets loading=true
+	•	filter collapses/clears
+	•	async returns later and updates state that re-triggers something
+	•	spinner never flips back
+
+You already added stale guards for restrictions.
+But your Details API (expandEmitter / parent loading) might still be racing.
+
+✅ Minimal safety: when filter happens, also invalidate “current expand”.
+
+Add:
+
+private expandReqId = 0;
+
+In dataStateChange():
+
+public dataStateChange(state: DataStateChangeEvent): void {
+  this.filter = state.filter ?? { logic: 'and', filters: [] };
+
+  // invalidate any in-flight expand
+  this.expandReqId++;
+
+  this.selectedTabIndex = 0;
+  this.clearTableResults(true);
+}
+
+And when you expand, capture:
+
+onExpand(event: any) {
+  const myExpandId = ++this.expandReqId;
+
+  // ... rest of your code
+
+  this.expandEmitter.emit({
+    caseNumber: event?.dataItem?.caseNumber,
+    caseInfo: event,
+    expandReqId: myExpandId
+  });
+}
+
+Then in the parent where details data is returned, only apply if ids match.
+(If you can’t modify parent, ignore this part — the resize fix is the big one.)
+
+⸻
+
+About the selectedIndex binding error
+
+You were right to question it.
+	•	If you still get selectedIndex compile error, it means TabStripModule isn’t in imports OR you’re on a Kendo version where the API differs.
+	•	But in your screenshots you have @progress/kendo-angular-layout installed.
+So the clean fix is:
+
+✅ Ensure in your component imports:
+
+import { TabStripModule } from '@progress/kendo-angular-layout';
+
+and include it in imports: [].
+
+If for some reason your project wraps TabStrip, then fallback is the “selected per tab” approach.
+
+⸻
+
+Bottom line (no sugar coating)
+	•	Your requirements logic is fine.
+	•	The “filter + expand details not showing fully until devtools drag” is a layout/reflow bug.
+	•	Fix it by forcing a resize after expand (not in dataStateChange).
+
+If you apply only ONE change now, do this:
+
+✅ forceGridReflow() after expand.
+
+That will immediately address the weirdness you’re seeing.
