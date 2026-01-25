@@ -1,0 +1,113 @@
+Add both, but in a specific way:
+
+✅ 1) Do the Child-only fix first (this is the one that will stop the “stuck forever” spinner immediately)
+
+Because your spinner is currently tied to parent loading, and you can’t touch parent. So you must gate it.
+
+Goal: show the spinner only during true initial load (when grid has no rows yet).
+
+⸻
+
+✅ 2) Then add the “Even better” local loader only if you actually want a loader for detail/tab fetching
+
+This is optional. It improves UX, but the main pain (infinite stuck spinner) is solved by #1.
+
+⸻
+
+Exactly what I want you to implement
+
+Step A — Replace loader in HTML
+
+Replace this:
+
+@if (loading) {
+  <div class="k-i-loading"></div>
+}
+
+With this:
+
+@if (showMainLoader || detailLoading) {
+  <div class="k-i-loading"></div>
+}
+
+
+⸻
+
+Step B — Add these variables + ngOnChanges in TS
+
+public showMainLoader = false;
+public detailLoading = false;
+
+ngOnChanges(): void {
+  const hasRows = Array.isArray(this.gridData) && this.gridData.length > 0;
+  // Only show parent loader if grid is empty (initial load)
+  this.showMainLoader = !!this.loading && !hasRows;
+}
+
+✅ This alone stops the “filter → expand → scroll → loader stuck forever” issue, because after filter you still have rows.
+
+⸻
+
+Step C — Turn on/off detailLoading inside child (optional but recommended)
+
+Turn it ON when you trigger expand:
+
+onExpand(event: any) {
+  this.detailLoading = true;
+
+  for (let i = 0; i < this.gridData?.length; i++) {
+    if (i !== event?.index) this.grid?.collapseRow(i);
+  }
+
+  this.clearTableResults(false);
+  this.fetchAndCacheRestrictionsForRow(event?.dataItem);
+
+  this.expandEmitter.emit({ caseNumber: event?.dataItem?.caseNumber, caseInfo: event });
+  this.enableUploadDoc(event?.dataItem);
+
+  this.cdr.detectChanges();
+}
+
+Turn it OFF when results come:
+
+this.subs.sink = this.service.expandSubject.subscribe((data: any) => {
+  this.detailsArray = data?.res;
+  this.detailLoading = false;
+  this.cdr.detectChanges();
+});
+
+this.subs.sink = this.service.expandDocumentSubject.subscribe((data: any) => {
+  this.docResults = data?.res;
+  this.detailLoading = false;
+  this.cdr.detectChanges();
+});
+
+Also OFF on collapse + filter:
+
+onCollapse(_: any) {
+  this.detailLoading = false;
+  this.clearTableResults(false);
+  this.cdr.detectChanges();
+}
+
+public dataStateChange(): void {
+  this.fitColumns();
+  this.detailLoading = false; // important
+  Promise.resolve().then(() => {
+    this.collapseAllRows();
+    this.clearTableResults(false);
+    this.cdr.detectChanges();
+  });
+}
+
+
+⸻
+
+Final answer
+
+✅ Do both.
+But if you want the minimum change right now: implement Step A + Step B only (that will stop the stuck loader).
+
+If you want the clean UX: add Step C too.
+
+If you paste your current loader block + where gridData is declared (@Input gridData?), I can adjust the “hasRows” condition perfectly for your case.
