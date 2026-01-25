@@ -1,0 +1,118 @@
+Got it — this behavior is not your data. It’s Kendo TabStrip + detail-row rendering timing.
+
+Why it happens (your exact “1 row after filter” case)
+	•	Your DETAILS tab content is inside <ng-template kendoTabContent>.
+	•	Kendo only creates that DOM when the tab is (re)selected.
+	•	When you filter down to one row, there’s no scroll to trigger any reflow, and since your selectedTab is already 'DETAILS', Kendo doesn’t “reselect” it, so the content doesn’t instantiate until you click the DETAILS tab.
+
+So we need to force a re-select of the tab (or keep tab content alive).
+
+⸻
+
+✅ Fix 1 (best): Force-select DETAILS tab programmatically on expand
+
+Add a ViewChild for Kendo TabStrip and call selectTab(0) after expand.
+
+HTML
+
+<kendo-tabstrip #detailsTabs>
+  <kendo-tabstrip-tab title="Details" [selected]="selectedTab === 'DETAILS'">
+    <ng-template kendoTabContent>
+      <!-- details content -->
+    </ng-template>
+  </kendo-tabstrip-tab>
+
+  <kendo-tabstrip-tab title="Documents" ...>...</kendo-tabstrip-tab>
+  <kendo-tabstrip-tab title="Correspondence" ...>...</kendo-tabstrip-tab>
+</kendo-tabstrip>
+
+TS
+
+import { TabStripComponent } from '@progress/kendo-angular-layout';
+import { ViewChild } from '@angular/core';
+
+@ViewChild('detailsTabs') detailsTabs!: TabStripComponent;
+
+onExpand(event: any) {
+  this.dataItem = event?.dataItem;
+
+  // Always default to Details
+  this.selectedTab = 'DETAILS';
+
+  // your existing code...
+  // collapse other rows, clearTableResults, emit, ensureRestrictionsLoaded, etc.
+
+  // ✅ Force Kendo to actually instantiate the DETAILS tab content
+  setTimeout(() => {
+    this.detailsTabs?.selectTab(0);   // Details = first tab
+    this.pendingReflow = true;        // keep your reflow path
+  });
+}
+
+This solves the “only 1 row, no scroll, need to click DETAILS” problem.
+
+⸻
+
+✅ Fix 2 (simpler but heavier): Keep tab content always rendered
+
+If you want zero timing issues, set:
+
+<kendo-tabstrip [keepTabContent]="true">
+
+Then Kendo won’t destroy/recreate content on selection, so the DETAILS content will always exist (even after filter).
+This is the most “it just works” option, but it can cost more DOM/memory if those tabs are heavy.
+
+⸻
+
+✅ Optional: Auto-expand the only row after filtering
+
+If your goal is: filter → only 1 row → auto expand and show details without any click, do this after you apply the filtered data:
+
+public dataStateChange(state: DataStateChangeEvent): void {
+  this.filter = state.filter ?? { logic: 'and', filters: [] };
+  this.selectedTab = 'DETAILS';
+  this.clearTableResults(true);
+
+  // after your filtered gridData is set...
+  setTimeout(() => {
+    if (this.gridData?.length === 1) {
+      this.grid?.expandRow(0);
+      this.dataItem = this.gridData[0];
+
+      // force tab creation
+      this.detailsTabs?.selectTab(0);
+    }
+
+    this.pendingReflow = true;
+  });
+}
+
+
+⸻
+
+About the “tab bar line under the tabs”
+
+You said “I’m using material styles” — but these are Kendo tabs, not Angular Material tabs.
+So you’ll only get the underline/indicator if:
+
+A) You imported the Kendo Material theme
+
+Make sure you have one of these in styles.scss (or angular.json styles):
+
+@import "@progress/kendo-theme-material/dist/all.css";
+
+(Or default theme: @progress/kendo-theme-default/dist/all.css)
+
+B) If you just want a bottom border line (CSS)
+
+.k-tabstrip-items-wrapper {
+  border-bottom: 1px solid #ddd;
+}
+
+
+⸻
+
+If you paste your TabStrip HTML section (just the tab markup), I’ll tell you exactly where to add:
+	•	#detailsTabs
+	•	[keepTabContent] (if needed)
+	•	and the correct tab index for Details (0/1/etc.) based on your order.
