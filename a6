@@ -1,0 +1,120 @@
+Got it. Two separate things are getting mixed up:
+	1.	Duplicate expandEmitter emits (you already fixed this)
+	2.	The spinning circle that never stops (this is NOT expandReqId anymore — it’s your @Input() loading overlay)
+
+⸻
+
+1) Which emit to remove: top or bottom?
+
+✅ Remove the TOP one and keep only ONE emit (the bottom one).
+
+In your current code (latest screenshot), you already have only one:
+
+this.expandEmitter.emit({
+  caseNumber: event?.dataItem?.caseNumber,
+  caseInfo: event,
+});
+
+That’s correct. Do not add expandReqId if you can’t change the parent.
+
+⸻
+
+2) Why the circle keeps spinning even after Details loads
+
+That circle is coming from your HTML:
+
+@if (loading) {
+  <div class="k-i-loading"></div>
+}
+
+And loading is:
+
+@Input() loading = false;
+
+So if the parent sets loading = true and forgets to set it back to false, your spinner will never stop, even if Details content renders.
+
+Since you said you cannot change the parent, we fix it inside this component by making the spinner smarter.
+
+⸻
+
+3) Fix (in this component only): show spinner ONLY when grid is truly empty / not ready
+
+✅ Step A — Replace your HTML spinner condition
+
+Change:
+
+@if (loading) {
+  <div class="k-i-loading"></div>
+}
+
+To:
+
+@if (showLoadingOverlay()) {
+  <div class="k-i-loading"></div>
+}
+
+✅ Step B — Add this method in TS
+
+showLoadingOverlay(): boolean {
+  // Show spinner only when we're actually waiting for the main grid data.
+  // If data is already present OR a row is expanded (dataItem set), hide it.
+  const hasGridData = Array.isArray(this.gridData) && this.gridData.length > 0;
+  const hasExpandedRow = !!this.dataItem?.caseNumber; // row selected/expanded already
+
+  return !!this.loading && !hasGridData && !hasExpandedRow;
+}
+
+Why this works:
+	•	After filter, parent might keep loading=true forever (bug upstream).
+	•	But your grid has data + row expanded + details visible → spinner should not block UI → this hides it.
+
+If you still want spinner during filter while data is empty, it will still show (correct).
+
+⸻
+
+4) Your onExpand should look like this (final stable order)
+
+onExpand(event: any) {
+  this.dataItem = event?.dataItem;
+
+  this.selectedTab = 'DETAILS';
+
+  for (let i = 0; i < this.gridData?.length; i++) {
+    if (i !== event?.index) {
+      this.grid?.collapseRow(i);
+    }
+  }
+
+  this.clearTableResults(false);
+  this.enableUploadDoc(event?.dataItem);
+
+  // start restrictions/tabs gating (your own flag)
+  this.ensureRestrictionsLoaded(event?.dataItem);
+
+  // single emit only
+  this.expandEmitter.emit({
+    caseNumber: event?.dataItem?.caseNumber,
+    caseInfo: event,
+  });
+
+  // reflow after expand (your pendingReflow approach)
+  this.pendingReFlow = true;
+}
+
+✅ No expandReqId needed.
+✅ No duplicate emit.
+✅ Spinner won’t hang because it no longer blindly trusts parent loading.
+
+⸻
+
+5) One more important check (quick)
+
+Inside ensureRestrictionsLoaded(...), make sure every path sets:
+
+this.restrictionsLoading = false;
+
+You already do it in success + error + cache-hit + early-returns — just double-check no missing branch.
+
+⸻
+
+If you apply only the HTML + showLoadingOverlay() method, your “details loaded but circle keeps spinning” problem should stop immediately without touching the parent.
